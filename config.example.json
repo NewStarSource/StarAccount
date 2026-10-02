@@ -1,0 +1,11 @@
+{
+  "mode": "development",
+  "address": "127.0.0.1:4100",
+  "origin": "http://127.0.0.1:4100",
+  "database": ".local/development.db",
+  "key_file": ".local/development.keys",
+  "mail_mode": "synthetic",
+  "smtp_host": "",
+  "smtp_port": 587,
+  "mail_from": ""
+}
