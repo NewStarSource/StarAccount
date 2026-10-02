@@ -10,6 +10,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - run: go version
       - run: test -z "$(gofmt -l cmd internal)"
       - run: go test -race ./... -count=1
       - run: go vet ./...
