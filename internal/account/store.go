@@ -23,6 +23,9 @@ import (
 //go:embed 001_init.sql
 var schema string
 
+//go:embed 002_identity.sql
+var identitySchema string
+
 func randomBytes(size int) []byte {
 	output := make([]byte, size)
 	if _, err := rand.Read(output); err != nil {
@@ -60,10 +63,17 @@ func openDatabase(filename string) (*sql.DB, error) {
 		return nil, err
 	}
 	var version int
-	if err = transaction.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version != 1 {
+	if err = transaction.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version < 1 || version > 2 {
 		transaction.Rollback()
 		database.Close()
 		return nil, errors.New("unsupported schema version")
+	}
+	if version == 1 {
+		if _, err = transaction.Exec(identitySchema); err != nil {
+			transaction.Rollback()
+			database.Close()
+			return nil, err
+		}
 	}
 	if err = transaction.Commit(); err != nil {
 		database.Close()
@@ -143,6 +153,9 @@ func (app *App) Cleanup() error {
 		query  string
 		cutoff int64
 	}{
+		{"DELETE FROM identity_events WHERE occurred_at < ?", timestamp - 30*86400},
+		{"DELETE FROM oidc_requests WHERE expires_at <= ?", timestamp},
+		{"DELETE FROM oidc_tokens WHERE expires_at <= ?", timestamp},
 		{"DELETE FROM limits WHERE reset_at <= ?", timestamp},
 		{"DELETE FROM security_events WHERE created_at < ?", timestamp - 30*86400},
 		{"DELETE FROM sessions WHERE COALESCE(revoked_at,expires_at) < ?", timestamp - 30*86400},

@@ -1,6 +1,7 @@
 package account
 
 import (
+	"context"
 	"database/sql"
 	_ "embed"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/csrf"
+	"github.com/zitadel/oidc/v3/pkg/op"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -34,6 +36,8 @@ type App struct {
 	mailMu    sync.Mutex
 	expensive chan struct{}
 	pages     *template.Template
+	provider  *op.Provider
+	oidcStore *oidcStore
 }
 type page struct {
 	Name      string
@@ -45,6 +49,8 @@ type page struct {
 	Messages  []Mail
 	Synthetic bool
 	Failed    int
+	Force     bool
+	Sessions  []SessionView
 }
 type input struct {
 	Email    string `json:"email"`
@@ -78,25 +84,32 @@ func New(config Config, keys []byte, logger *log.Logger) (*App, error) {
 		database.Close()
 		return nil, err
 	}
+	if err = app.initOIDC(); err != nil {
+		database.Close()
+		return nil, err
+	}
 	return app, nil
 }
 func (app *App) Close() error { return app.db.Close() }
 
 func (app *App) Handler() http.Handler {
 	router := chi.NewRouter()
+	app.identityRoutes(router)
+	router.Get("/oidc/login", app.oidcLogin)
+	router.Post("/oidc/login", app.oidcLogin)
 	router.Get("/health", func(writer http.ResponseWriter, request *http.Request) {
 		if err := app.db.PingContext(request.Context()); err != nil {
 			app.respond(writer, request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂时不可用，请稍后重试")
 			return
 		}
-		writeJSON(writer, 200, map[string]any{"ok": true, "service": "star-account", "stage": "S01/S02", "integration": "未联调", "real_users": false})
+		writeJSON(writer, 200, map[string]any{"ok": true, "service": "star-account", "stage": "S03", "oidc_configured": app.provider != nil, "integration": "本地合成；真实环境未联调", "real_users": false})
 	})
 	router.Get("/robots.txt", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(writer, "User-agent: *\nDisallow: /\n")
 	})
 	router.Get("/api/v1/config", func(writer http.ResponseWriter, request *http.Request) {
-		writeJSON(writer, 200, map[string]any{"service": "star-account", "mail_mode": app.config.MailMode, "password_owner": "star-account", "oidc": "S03 未实现", "real_users": false})
+		writeJSON(writer, 200, map[string]any{"service": "star-account", "mail_mode": app.config.MailMode, "password_owner": "star-account", "oidc_configured": app.provider != nil, "real_users": false})
 	})
 	router.Get("/api/v1/csrf", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, 200, map[string]string{"csrf_token": csrf.Token(request)})
@@ -168,6 +181,40 @@ func (app *App) Handler() http.Handler {
 			return
 		}
 		request.Body = http.MaxBytesReader(writer, request.Body, 8192)
+		if app.provider != nil {
+			switch request.URL.Path {
+			case "/.well-known/openid-configuration", "/keys", "/authorize", "/authorize/callback", "/oauth/token", "/userinfo":
+				method := "GET"
+				if request.URL.Path == "/oauth/token" {
+					method = "POST"
+				}
+				if request.Method != method {
+					app.respond(writer, request, 405, "METHOD_NOT_ALLOWED", "请求方式无效")
+					return
+				}
+				host, _, _ := net.SplitHostPort(request.RemoteAddr)
+				if !app.allow("protocol:"+request.URL.Path+":"+host, 120, time.Minute) {
+					app.respond(writer, request, 429, "RATE_LIMITED", "请求过于频繁")
+					return
+				}
+				if request.URL.Path == "/authorize" {
+					binding := randomToken()
+					http.SetCookie(writer, &http.Cookie{Name: "star_oidc_flow", Value: binding, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 300})
+					request = request.WithContext(context.WithValue(request.Context(), oidcBindingKey{}, binding))
+				}
+				if request.URL.Path == "/authorize/callback" {
+					if _, err := app.boundAuthorization(request, request.URL.Query().Get("id")); err != nil {
+						app.respond(writer, request, 400, "AUTH_REQUEST_INVALID", "登录请求失效")
+						return
+					}
+				}
+				app.provider.ServeHTTP(writer, request)
+				return
+			case "/internal/identity/events", "/internal/identity/session":
+				app.identityAPI(writer, request)
+				return
+			}
+		}
 		protected.ServeHTTP(writer, csrf.PlaintextHTTPRequest(request))
 	})
 }
@@ -184,6 +231,10 @@ func (app *App) action(action string) http.HandlerFunc {
 			return
 		}
 		if action == "logout" {
+			if _, err = io.Copy(io.Discard, request.Body); err != nil {
+				app.respond(writer, request, 400, "INPUT_INVALID", "请求无效")
+				return
+			}
 			if err = app.logout(request.Context(), request); err != nil {
 				app.internal(writer, request)
 				return

@@ -10,15 +10,18 @@ import (
 )
 
 type Config struct {
-	Mode     string `json:"mode"`
-	Address  string `json:"address"`
-	Origin   string `json:"origin"`
-	Database string `json:"database"`
-	KeyFile  string `json:"key_file"`
-	MailMode string `json:"mail_mode"`
-	SMTPHost string `json:"smtp_host"`
-	SMTPPort int    `json:"smtp_port"`
-	MailFrom string `json:"mail_from"`
+	Mode           string `json:"mode"`
+	Address        string `json:"address"`
+	Origin         string `json:"origin"`
+	Database       string `json:"database"`
+	KeyFile        string `json:"key_file"`
+	MailMode       string `json:"mail_mode"`
+	SMTPHost       string `json:"smtp_host"`
+	SMTPPort       int    `json:"smtp_port"`
+	MailFrom       string `json:"mail_from"`
+	OIDCSecretFile string `json:"oidc_secret_file"`
+	SigningKeyFile string `json:"signing_key_file"`
+	AtlasOrigin    string `json:"atlas_origin"`
 }
 
 func LoadConfig(filename string) (Config, []byte, error) {
@@ -60,6 +63,12 @@ func (config Config) Validate() error {
 	}
 	if config.MailMode == "smtp" && (config.SMTPHost == "" || config.SMTPPort < 1 || config.MailFrom == "" || os.Getenv("STARACCOUNT_SMTP_USER") == "" || os.Getenv("STARACCOUNT_SMTP_PASSWORD") == "") {
 		return errors.New("SMTP 配置不完整，不能启动")
+	}
+	if config.OIDCSecretFile != "" || config.SigningKeyFile != "" || config.AtlasOrigin != "" {
+		origin, err := url.Parse(config.AtlasOrigin)
+		if err != nil || origin.Scheme != "http" || net.ParseIP(origin.Hostname()) == nil || !net.ParseIP(origin.Hostname()).IsLoopback() || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" || config.OIDCSecretFile == "" || config.SigningKeyFile == "" {
+			return errors.New("OIDC 配置不完整或星图地址无效")
+		}
 	}
 	return nil
 }
