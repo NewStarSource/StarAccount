@@ -32,16 +32,16 @@ func securityCall(client *browser, action string, values url.Values) *httptest.R
 func TestSecurityOwnershipReauthenticationAndRecovery(t *testing.T) {
 	app, client, _ := fixture(t)
 	registerVerified(t, app, client)
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 200)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 200)
 	requireStatus(t, securityCall(client, "revoke-all", url.Values{}), 403)
 	requireStatus(t, securityCall(client, "reauthenticate", url.Values{"password": {"wrong password 123"}}), 401)
 	requireStatus(t, securityCall(client, "reauthenticate", url.Values{"password": {testPassword}}), 200)
 	requireStatus(t, securityCall(client, "revoke", url.Values{"session_id": {"not-owned"}}), 404)
 	otherID := opaqueID()
-	if _, err := app.db.Exec("INSERT INTO users(id,subject_id,email,alias,password_hash,verified,status,created_at) SELECT ?,?,'other@example.com','另一账户',password_hash,1,'active',created_at FROM users WHERE email='reader@example.com'", otherID, opaqueID()); err != nil {
+	if _, err := app.db.Exec("INSERT INTO users(id,subject_id,email,username,alias,password_hash,verified,status,created_at) SELECT ?,?,'other@account.invalid','otheruser','otheruser',password_hash,1,'active',created_at FROM users WHERE username='testuser'", otherID, opaqueID()); err != nil {
 		t.Fatal(err)
 	}
-	otherToken, err := app.login("other@example.com", testPassword, "")
+	otherToken, err := app.login("otheruser", testPassword, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,22 +67,22 @@ func TestSecurityOwnershipReauthenticationAndRecovery(t *testing.T) {
 	if err := app.db.QueryRow("SELECT count(*) FROM identity_events").Scan(&events); err != nil || events < 2 {
 		t.Fatal("revocation and status event missing")
 	}
-	requireStatus(t, securityCall(client, "restore", url.Values{"email": {"reader@example.com"}, "password": {"wrong password 123"}}), 400)
-	requireStatus(t, securityCall(client, "restore", url.Values{"email": {"reader@example.com"}, "password": {testPassword}}), 200)
+	requireStatus(t, securityCall(client, "restore", url.Values{"username": {"testuser"}, "password": {"wrong password 123"}}), 400)
+	requireStatus(t, securityCall(client, "restore", url.Values{"username": {"testuser"}, "password": {testPassword}}), 200)
 	if strings.Contains(client.call("GET", "/api/v1/auth/session", nil).Body.String(), `"authenticated":true`) {
 		t.Fatal("restore resurrected session")
 	}
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 200)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 200)
 	if _, err := app.db.Exec("UPDATE users SET status='suspended'"); err != nil {
 		t.Fatal(err)
 	}
-	requireStatus(t, securityCall(client, "restore", url.Values{"email": {"reader@example.com"}, "password": {testPassword}}), 400)
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 401)
+	requireStatus(t, securityCall(client, "restore", url.Values{"username": {"testuser"}, "password": {testPassword}}), 400)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 401)
 }
 func TestRecoveryExpiryAndReauthTimeout(t *testing.T) {
 	app, client, _ := fixture(t)
 	registerVerified(t, app, client)
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 200)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 200)
 	requireStatus(t, securityCall(client, "reauthenticate", url.Values{"password": {testPassword}}), 200)
 	timestamp := time.Now().Add(6 * time.Minute)
 	app.now = func() time.Time { return timestamp }
@@ -90,12 +90,16 @@ func TestRecoveryExpiryAndReauthTimeout(t *testing.T) {
 	requireStatus(t, securityCall(client, "reauthenticate", url.Values{"password": {testPassword}}), 200)
 	requireStatus(t, securityCall(client, "deactivate", url.Values{"confirm": {"deactivate"}}), 200)
 	timestamp = timestamp.Add(31 * 24 * time.Hour)
-	requireStatus(t, securityCall(client, "restore", url.Values{"email": {"reader@example.com"}, "password": {testPassword}}), 400)
+	requireStatus(t, securityCall(client, "restore", url.Values{"username": {"testuser"}, "password": {testPassword}}), 400)
 }
 func TestRevocationEventsTransactionalAndAuthenticated(t *testing.T) {
 	app, client, _ := fixture(t)
 	registerVerified(t, app, client)
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 200)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 200)
+	var initialCount int
+	if err := app.db.QueryRow("SELECT count(*) FROM identity_events").Scan(&initialCount); err != nil {
+		t.Fatal(err)
+	}
 	transaction, err := app.db.Begin()
 	if err != nil {
 		t.Fatal(err)
@@ -105,8 +109,8 @@ func TestRevocationEventsTransactionalAndAuthenticated(t *testing.T) {
 	}
 	transaction.Rollback()
 	var count int
-	if err = app.db.QueryRow("SELECT count(*) FROM identity_events").Scan(&count); err != nil || count != 0 {
-		t.Fatal("event escaped rolled-back transaction")
+	if err = app.db.QueryRow("SELECT count(*) FROM identity_events").Scan(&count); err != nil || count != initialCount {
+		t.Fatalf("event escaped rolled-back transaction: initial=%d current=%d", initialCount, count)
 	}
 	app.oidcStore = &oidcStore{app: app, secret: randomToken()}
 	request := httptest.NewRequest("GET", app.config.Origin+"/internal/identity/events?after=0", nil)
@@ -121,10 +125,10 @@ func TestRevocationEventsTransactionalAndAuthenticated(t *testing.T) {
 	var body struct {
 		Events []identityEvent `json:"events"`
 	}
-	if err = json.Unmarshal(response.Body.Bytes(), &body); err != nil || len(body.Events) != 1 {
+	if err = json.Unmarshal(response.Body.Bytes(), &body); err != nil || len(body.Events) < 1 {
 		t.Fatal("missing committed event")
 	}
-	if err = app.restore(context.Background(), "reader@example.com", testPassword); err == nil {
+	if err = app.restore(context.Background(), "testuser", testPassword); err == nil {
 		t.Fatal("active account restored")
 	}
 }

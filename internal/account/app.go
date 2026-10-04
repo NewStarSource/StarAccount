@@ -124,7 +124,7 @@ func (app *App) Handler() http.Handler {
 		}
 		writeJSON(writer, 200, map[string]any{"authenticated": identity != nil, "user": identity})
 	})
-	for route, name := range map[string]string{"/": "home", "/register": "register", "/login": "login", "/forgot": "forgot", "/verify": "verify", "/reset": "reset", "/config": "config"} {
+	for route, name := range map[string]string{"/": "home", "/register": "register", "/login": "login", "/forgot": "forgot", "/reset": "reset", "/config": "config"} {
 		router.Get(route, func(writer http.ResponseWriter, request *http.Request) {
 			identity, err := app.identity(request)
 			if err != nil {
@@ -153,7 +153,7 @@ func (app *App) Handler() http.Handler {
 			app.render(writer, request, 200, page{Name: "mailbox", Messages: messages, Failed: failed})
 		})
 	}
-	for _, action := range []string{"register", "request-reset", "verify-email", "reset-password", "login", "logout"} {
+	for _, action := range []string{"register", "request-reset", "reset-password", "login", "logout"} {
 		router.Post("/api/v1/auth/"+action, app.action(action))
 	}
 	router.NotFound(func(writer http.ResponseWriter, request *http.Request) {
@@ -276,10 +276,10 @@ func (app *App) action(action string) http.HandlerFunc {
 			app.respond(writer, request, 503, "BUSY", "服务繁忙，请稍后重试")
 			return
 		}
-		if action == "register" && (values.Username != "" || values.InviteCode != "") {
+		if action == "register" {
 			values.Username, err = normalizeUsername(values.Username)
 			if err != nil || !validPassword(values.Password) || len(values.InviteCode) < 20 || len(values.InviteCode) > 128 {
-				app.respond(writer, request, 400, "INPUT_INVALID", "请输入有效用户名、密码和邀请码")
+				app.respond(writer, request, 400, "INVITE_REQUIRED", "当前阶段只接受邀请码注册。请输入有效用户名、密码和邀请码。")
 				return
 			}
 			if !app.allow("invite-register:"+values.Username, 5, 15*time.Minute) {
@@ -303,7 +303,7 @@ func (app *App) action(action string) http.HandlerFunc {
 			app.respond(writer, request, 201, "REGISTERED", "注册成功，已登录新星账户。")
 			return
 		}
-		if action == "register" || action == "request-reset" || action == "login" {
+		if action == "request-reset" || action == "login" {
 			if action == "login" && values.Username != "" {
 				values.Username, err = normalizeUsername(values.Username)
 				if err != nil {
@@ -317,7 +317,7 @@ func (app *App) action(action string) http.HandlerFunc {
 					return
 				}
 			}
-			if (action == "register" || action == "login") && !validPassword(values.Password) {
+			if action == "login" && !validPassword(values.Password) {
 				app.respond(writer, request, 400, "INPUT_INVALID", "密码需至少 12 个字符，且不超过 72 个 UTF-8 字节")
 				return
 			}
@@ -341,28 +341,20 @@ func (app *App) action(action string) http.HandlerFunc {
 			}
 		}
 		switch action {
-		case "register", "request-reset":
-			kind := "verify"
-			if action == "request-reset" {
-				kind = "reset"
-			}
-			if err = app.requestMail(values.Email, values.Password, kind); err != nil {
+		case "request-reset":
+			if err = app.requestMail(values.Email, values.Password, "reset"); err != nil {
 				app.internal(writer, request)
 				return
 			}
 			app.audit("mail_request_accepted")
 			app.accepted(writer, request)
-		case "verify-email", "reset-password":
-			kind := "verify"
-			if action == "reset-password" {
-				kind = "reset"
-				if !validPassword(values.Password) {
-					app.respond(writer, request, 400, "INPUT_INVALID", "密码需至少 12 个字符，且不超过 72 个 UTF-8 字节")
-					return
-				}
+		case "reset-password":
+			if !validPassword(values.Password) {
+				app.respond(writer, request, 400, "INPUT_INVALID", "密码需至少 12 个字符，且不超过 72 个 UTF-8 字节")
+				return
 			}
-			if err = app.consume(values.Token, kind, values.Password); errors.Is(err, errCredential) {
-				app.respond(writer, request, 400, "LINK_INVALID", "链接已过期、已使用或不适用于当前账户。请重新注册验证或申请找回。")
+			if err = app.consume(values.Token, "reset", values.Password); errors.Is(err, errCredential) {
+				app.respond(writer, request, 400, "LINK_INVALID", "链接已过期、已使用或不适用于当前账户。请重新申请找回。")
 				return
 			} else if err != nil {
 				app.internal(writer, request)
@@ -370,7 +362,7 @@ func (app *App) action(action string) http.HandlerFunc {
 			}
 			setSession(writer, "", false)
 			app.audit("credential_confirmed")
-			app.respond(writer, request, 200, "CONFIRMED", "操作完成，请用已确认的密码登录。原有会话已失效。")
+			app.respond(writer, request, 200, "CONFIRMED", "密码已重置，请用新密码登录。原有会话已失效。")
 		case "login":
 			old := ""
 			if cookie, cookieErr := request.Cookie("star_account_session"); cookieErr == nil {

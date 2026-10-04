@@ -32,7 +32,7 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 测试实例请使用独立 database 和 key_file、端口/origin；不要复制开发数据库去做真实用户测试。
 
 `GET /health`、`GET /api/v1/config` 提供状态；`GET /api/v1/csrf` 获得 API 请求的 CSRF token（同时保留 cookie），之后 POST 使用同源 Origin 与 X-CSRF-Token。
-账户端点为 `/api/v1/auth/register`、`verify-email`、`login`、`logout`、`request-reset`、`reset-password` 和 GET `session`。邀请码注册字段为 username/password/invite_code；登录字段为 username/password。旧邮箱接口仅保留兼容测试，不作为当前页面注册流程。
+账户端点为 `/api/v1/auth/register`、`login`、`logout`、`request-reset`、`reset-password` 和 GET `session`。邀请码注册字段为 username/password/invite_code；登录字段为 username/password。新注册只接受邀请码方式，旧邮箱验证流程已移除。
 注册与找回统一返回 202 REQUEST_ACCEPTED，不暴露账户或 token。JSON 正文最多 8 KiB，登录与表单均限流。
 
 密码使用 bcrypt cost 10；会话令牌与验证令牌只存哈希；待发邮件使用 AES-GCM 加密。单 SQLite 写连接，WAL/FULL/FK，2 秒忙等待。编号迁移 `internal/account/001_init.sql`，失败不会清空或替换损坏库。

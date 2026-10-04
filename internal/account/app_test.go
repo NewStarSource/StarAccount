@@ -100,10 +100,13 @@ const testPassword = "synthetic password 123"
 
 func registerVerified(t *testing.T, app *App, client *browser) string {
 	t.Helper()
-	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Email: "reader@example.com", Password: testPassword}), 202)
-	raw := mailToken(t, app, "verify")
-	requireStatus(t, client.call("POST", "/api/v1/auth/verify-email", input{Token: raw}), 200)
-	return raw
+	invite, err := app.GenerateInvite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Username: "testuser", Password: testPassword, InviteCode: invite}), 201)
+	client.call("POST", "/api/v1/auth/logout", nil)
+	return invite
 }
 
 func TestInviteRegistrationSingleUse(t *testing.T) {
@@ -129,23 +132,11 @@ func TestInviteRegistrationSingleUse(t *testing.T) {
 
 func TestRegisterVerifyLoginLogout(t *testing.T) {
 	app, client, logs := fixture(t)
-	first := client.call("POST", "/api/v1/auth/register", input{Email: "reader@example.com", Password: testPassword})
-	requireStatus(t, first, 202)
-	duplicate := client.call("POST", "/api/v1/auth/register", input{Email: "reader@example.com", Password: testPassword})
-	requireStatus(t, duplicate, 202)
-	if first.Body.String() != duplicate.Body.String() {
-		t.Fatal("registration enumerates accounts")
+	invite, err := app.GenerateInvite()
+	if err != nil {
+		t.Fatal(err)
 	}
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 401)
-	token := mailToken(t, app, "verify")
-	requireStatus(t, client.call("GET", "/verify?token="+token, nil), 200)
-	requireStatus(t, client.call("POST", "/api/v1/auth/verify-email", input{Token: token}), 200)
-	requireStatus(t, client.call("POST", "/api/v1/auth/verify-email", input{Token: token}), 400)
-	verifiedDuplicate := client.call("POST", "/api/v1/auth/register", input{Email: "reader@example.com", Password: testPassword})
-	if first.Body.String() != verifiedDuplicate.Body.String() {
-		t.Fatal("verified account enumerated")
-	}
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 200)
+	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Username: "testuser", Password: testPassword, InviteCode: invite}), 201)
 	cookie := client.cookies["star_account_session"]
 	if cookie == nil || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge > 30*86400 {
 		t.Fatal("invalid cookie attributes")
@@ -165,24 +156,31 @@ func TestRegisterVerifyLoginLogout(t *testing.T) {
 	if !strings.Contains(client.call("GET", "/api/v1/auth/session", nil).Body.String(), `"authenticated":false`) {
 		t.Fatal("revoked session accepted")
 	}
-	for _, secret := range []string{testPassword, token, cookie.Value, "reader@example.com"} {
+	for _, secret := range []string{testPassword, invite, cookie.Value, "testuser"} {
 		if strings.Contains(logs.String(), secret) {
 			t.Fatal("sensitive log content")
 		}
 	}
+	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Email: "old@example.com", Password: testPassword}), 400)
 }
 func TestRecoveryAndExpiry(t *testing.T) {
 	app, client, _ := fixture(t)
-	registerVerified(t, app, client)
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 200)
+	invite, err := app.GenerateInvite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Username: "resetuser", Password: testPassword, InviteCode: invite}), 201)
 	oldCookie := client.cookies["star_account_session"]
-	existing := client.call("POST", "/api/v1/auth/request-reset", input{Email: "reader@example.com"})
+	var email string
+	if err := app.db.QueryRow("SELECT email FROM users WHERE username='resetuser'").Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	existing := client.call("POST", "/api/v1/auth/request-reset", input{Email: email})
 	missing := client.call("POST", "/api/v1/auth/request-reset", input{Email: "missing@example.com"})
 	if existing.Code != missing.Code || existing.Body.String() != missing.Body.String() {
 		t.Fatal("recovery enumerates accounts")
 	}
 	token := mailToken(t, app, "reset")
-	requireStatus(t, client.call("POST", "/api/v1/auth/verify-email", input{Token: token}), 400)
 	requireStatus(t, client.call("POST", "/api/v1/auth/reset-password", input{Token: token, Password: "short"}), 400)
 	requireStatus(t, client.call("POST", "/api/v1/auth/reset-password", input{Token: token, Password: "replacement password 456"}), 200)
 	requireStatus(t, client.call("POST", "/api/v1/auth/reset-password", input{Token: token, Password: testPassword}), 400)
@@ -190,9 +188,9 @@ func TestRecoveryAndExpiry(t *testing.T) {
 	if strings.Contains(client.call("GET", "/api/v1/auth/session", nil).Body.String(), `"authenticated":true`) {
 		t.Fatal("reset did not revoke sessions")
 	}
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 401)
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: "replacement password 456"}), 200)
-	requireStatus(t, client.call("POST", "/api/v1/auth/request-reset", input{Email: "reader@example.com"}), 202)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "resetuser", Password: testPassword}), 401)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "resetuser", Password: "replacement password 456"}), 200)
+	requireStatus(t, client.call("POST", "/api/v1/auth/request-reset", input{Email: email}), 202)
 	expired := mailToken(t, app, "reset")
 	timestamp := time.Now().Add(2 * time.Hour)
 	app.now = func() time.Time { return timestamp }
@@ -200,40 +198,39 @@ func TestRecoveryAndExpiry(t *testing.T) {
 }
 func TestVerificationExpiryAndPreRegistration(t *testing.T) {
 	app, client, _ := fixture(t)
-	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Email: "reader@example.com", Password: "attacker chosen password"}), 202)
-	attackerToken := mailToken(t, app, "verify")
-	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Email: "reader@example.com", Password: testPassword}), 202)
-	if err := app.ProcessMail(context.Background()); err != nil {
+	invite, err := app.GenerateInvite()
+	if err != nil {
 		t.Fatal(err)
 	}
-	messages, _ := app.Mailbox()
-	var ownerToken string
-	for _, message := range messages {
-		parsed, _ := url.Parse(message.Link)
-		candidate := parsed.Query().Get("token")
-		if candidate != attackerToken {
-			ownerToken = candidate
-		}
+	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Username: "expireuser", Password: testPassword, InviteCode: invite}), 201)
+	var email string
+	if err := app.db.QueryRow("SELECT email FROM users WHERE username='expireuser'").Scan(&email); err != nil {
+		t.Fatal(err)
 	}
-	requireStatus(t, client.call("POST", "/api/v1/auth/verify-email", input{Token: ownerToken}), 200)
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: "attacker chosen password"}), 401)
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 200)
-	requireStatus(t, client.call("POST", "/api/v1/auth/verify-email", input{Token: attackerToken}), 400)
-	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Email: "expired@example.com", Password: testPassword}), 202)
-	expired := mailToken(t, app, "verify")
+	requireStatus(t, client.call("POST", "/api/v1/auth/request-reset", input{Email: email}), 202)
+	token := mailToken(t, app, "reset")
 	timestamp := time.Now().Add(2 * time.Hour)
 	app.now = func() time.Time { return timestamp }
-	requireStatus(t, client.call("POST", "/api/v1/auth/verify-email", input{Token: expired}), 400)
+	requireStatus(t, client.call("POST", "/api/v1/auth/reset-password", input{Token: token, Password: testPassword}), 400)
 }
 func TestConcurrentConsumption(t *testing.T) {
 	app, client, _ := fixture(t)
-	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Email: "reader@example.com", Password: testPassword}), 202)
-	token := mailToken(t, app, "verify")
+	invite, err := app.GenerateInvite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Username: "concurrentuser", Password: testPassword, InviteCode: invite}), 201)
+	var email string
+	if err := app.db.QueryRow("SELECT email FROM users WHERE username='concurrentuser'").Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	requireStatus(t, client.call("POST", "/api/v1/auth/request-reset", input{Email: email}), 202)
+	token := mailToken(t, app, "reset")
 	var group sync.WaitGroup
 	results := make(chan error, 8)
 	for index := 0; index < 8; index++ {
 		group.Add(1)
-		go func() { defer group.Done(); results <- app.consume(token, "verify", "") }()
+		go func() { defer group.Done(); results <- app.consume(token, "reset", "new password 789") }()
 	}
 	group.Wait()
 	close(results)
@@ -252,8 +249,8 @@ func TestConcurrentConsumption(t *testing.T) {
 func TestCSRFOriginLimitsAndUnknownPassword(t *testing.T) {
 	app, client, _ := fixture(t)
 	registerVerified(t, app, client)
-	wrong := client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: "incorrect password 123"})
-	missing := client.call("POST", "/api/v1/auth/login", input{Email: "absent@example.com", Password: testPassword})
+	wrong := client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: "incorrect password 123"})
+	missing := client.call("POST", "/api/v1/auth/login", input{Username: "absentuser", Password: testPassword})
 	if wrong.Code != 401 || missing.Body.String() != wrong.Body.String() {
 		t.Fatal("login enumeration")
 	}
@@ -267,9 +264,9 @@ func TestCSRFOriginLimitsAndUnknownPassword(t *testing.T) {
 	app.Handler().ServeHTTP(response, request)
 	requireStatus(t, response, 403)
 	for index := 0; index < 4; index++ {
-		client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: "incorrect password 123"})
+		client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: "incorrect password 123"})
 	}
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 429)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 429)
 	for index := 0; index < 30; index++ {
 		client.call("POST", "/api/v1/auth/request-reset", input{Email: "absent@example.com"})
 	}
@@ -279,7 +276,7 @@ func TestCSRFOriginLimitsAndUnknownPassword(t *testing.T) {
 func TestPersistenceStatusAndMigration(t *testing.T) {
 	app, client, _ := fixture(t)
 	registerVerified(t, app, client)
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 200)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 200)
 	if err := app.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +295,7 @@ func TestPersistenceStatusAndMigration(t *testing.T) {
 	if strings.Contains(client.call("GET", "/api/v1/auth/session", nil).Body.String(), `"authenticated":true`) {
 		t.Fatal("suspended user authenticated")
 	}
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 401)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 401)
 	var version int
 	if err = reopened.db.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version != 3 {
 		t.Fatal("migration failed")
@@ -311,13 +308,22 @@ func (failSender) Send(context.Context, Mail) error {
 	return errors.New("provider secret should never be logged")
 }
 func TestMailFailureEncryptionRetryAndCleanup(t *testing.T) {
-	app, client, logs := fixture(t)
-	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Email: "reader@example.com", Password: testPassword}), 202)
+	app, client, _ := fixture(t)
+	invite, err := app.GenerateInvite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Username: "mailuser", Password: testPassword, InviteCode: invite}), 201)
+	var email string
+	if err := app.db.QueryRow("SELECT email FROM users WHERE username='mailuser'").Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	requireStatus(t, client.call("POST", "/api/v1/auth/request-reset", input{Email: email}), 202)
 	var payload []byte
 	if err := app.db.QueryRow("SELECT payload FROM mail_jobs").Scan(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(payload, []byte("reader@example.com")) {
+	if bytes.Contains(payload, []byte(email)) {
 		t.Fatal("unencrypted outbox")
 	}
 	app.config.MailMode = "smtp"
@@ -337,6 +343,11 @@ func TestMailFailureEncryptionRetryAndCleanup(t *testing.T) {
 	}
 	if status != "permanent_failure" || attempts != 3 || code != "MAIL_DELIVERY_FAILED" {
 		t.Fatal("mail failure not recorded")
+	}
+	logs := &bytes.Buffer{}
+	app.logger = log.New(logs, "", 0)
+	if err := app.ProcessMail(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	if strings.Contains(logs.String(), "provider secret") {
 		t.Fatal("mail error leaked")
@@ -381,7 +392,11 @@ func TestFormsHeadersAndIsolation(t *testing.T) {
 	if response.Header().Get("Referrer-Policy") != "strict-origin" {
 		t.Fatal("form origin must be retained without path/query")
 	}
-	values := url.Values{"email": {"form@example.com"}, "password": {testPassword}, "gorilla.csrf.Token": {client.csrf}}
+	invite, err := app.GenerateInvite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := url.Values{"username": {"formuser"}, "password": {testPassword}, "invite_code": {invite}, "gorilla.csrf.Token": {client.csrf}}
 	request := httptest.NewRequest("POST", app.config.Origin+"/api/v1/auth/register", strings.NewReader(values.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Origin", app.config.Origin)
@@ -392,8 +407,8 @@ func TestFormsHeadersAndIsolation(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	app.Handler().ServeHTTP(response, request)
-	requireStatus(t, response, 202)
-	if !strings.Contains(response.Body.String(), "请求已受理") {
+	requireStatus(t, response, 201)
+	if !strings.Contains(response.Body.String(), "注册成功") {
 		t.Fatal("SSR result missing")
 	}
 	for _, origin := range []string{"null", "http://evil.test", "http://127.0.0.1:4200"} {
@@ -419,7 +434,8 @@ func TestFormsHeadersAndIsolation(t *testing.T) {
 	app.config.MailMode = "smtp"
 	requireStatus(t, client.call("GET", "/dev/mailbox", nil), 404)
 	app.config.MailMode = "synthetic"
-	response = client.call("POST", "/api/v1/auth/register", input{Email: "size@example.com", Password: strings.Repeat("x", 9000)})
+	invite2, _ := app.GenerateInvite()
+	response = client.call("POST", "/api/v1/auth/register", input{Username: "sizeuser", Password: strings.Repeat("x", 9000), InviteCode: invite2})
 	if response.Code != 400 && response.Code != 403 {
 		t.Fatal("oversized request accepted")
 	}
@@ -428,9 +444,9 @@ func TestFormsHeadersAndIsolation(t *testing.T) {
 func TestSessionRotationAndExpiry(t *testing.T) {
 	app, client, _ := fixture(t)
 	registerVerified(t, app, client)
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 200)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 200)
 	old := client.cookies["star_account_session"]
-	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 200)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 200)
 	current := client.cookies["star_account_session"]
 	if current.Value == old.Value {
 		t.Fatal("session not rotated")
