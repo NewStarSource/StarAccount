@@ -9,12 +9,74 @@ import (
 	"net/mail"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
 var errCredential = errors.New("invalid credential")
+var errInvite = errors.New("invalid invite code")
+
+func normalizeUsername(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) < 3 || utf8.RuneCountInString(value) > 32 {
+		return "", errors.New("invalid username")
+	}
+	for _, character := range value {
+		if unicode.IsSpace(character) || unicode.IsControl(character) || character == '@' || character == '/' || character == '\\' {
+			return "", errors.New("invalid username")
+		}
+	}
+	return value, nil
+}
+
+func (app *App) registerInvite(username, password, code string) error {
+	if !validPassword(password) || code == "" {
+		return errInvite
+	}
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	transaction, err := app.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer transaction.Rollback()
+	usedAt := app.now().Unix()
+	result, err := transaction.Exec("UPDATE invite_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL", usedAt, hash(code))
+	if err != nil {
+		return err
+	}
+	count, _ := result.RowsAffected()
+	if count != 1 {
+		return errInvite
+	}
+	userID := opaqueID()
+	internalEmail := userID + "@account.invalid"
+	_, err = transaction.Exec("INSERT INTO users(id,subject_id,email,username,alias,password_hash,verified,status,created_at) VALUES(?,?,?,?,?,?,1,'active',?)", userID, opaqueID(), internalEmail, username, username, string(passwordHash), app.now().Unix())
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return errInvite
+		}
+		return err
+	}
+	_, err = transaction.Exec("UPDATE invite_codes SET used_by=? WHERE code_hash=? AND used_at=?", userID, hash(code), usedAt)
+	if err != nil {
+		return err
+	}
+	return transaction.Commit()
+}
+
+func (app *App) GenerateInvite() (string, error) {
+	raw := randomToken()
+	_, err := app.db.Exec("INSERT INTO invite_codes(code_hash,created_at) VALUES(?,?)", hash(raw), app.now().Unix())
+	if err != nil {
+		return "", err
+	}
+	return raw, nil
+}
 
 type Identity struct {
 	ID        string `json:"id"`
@@ -31,6 +93,13 @@ func normalizeEmail(value string) (string, error) {
 	}
 	return value, nil
 }
+func normalizeIdentifier(value string) (string, error) {
+	if username, err := normalizeUsername(value); err == nil {
+		return username, nil
+	}
+	return normalizeEmail(value)
+}
+
 func validPassword(value string) bool {
 	return utf8.ValidString(value) && utf8.RuneCountInString(value) >= 12 && len(value) <= 72
 }
@@ -154,7 +223,7 @@ func (app *App) consume(raw, kind, password string) error {
 func (app *App) login(address, password, oldToken string) (string, error) {
 	var userID, passwordHash, status string
 	var verified int
-	err := app.db.QueryRow("SELECT id,password_hash,verified,status FROM users WHERE email=?", address).Scan(&userID, &passwordHash, &verified, &status)
+	err := app.db.QueryRow("SELECT id,password_hash,verified,status FROM users WHERE email=? OR username=?", address, address).Scan(&userID, &passwordHash, &verified, &status)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}

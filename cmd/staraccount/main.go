@@ -14,9 +14,35 @@ import (
 	"staraccount/internal/account"
 )
 
+func generateInvite(logger *log.Logger) {
+	filename := ".local/development.json"
+	if len(os.Args) > 3 && os.Args[2] == "-config" {
+		filename = os.Args[3]
+	}
+	config, keys, err := account.LoadConfig(filename)
+	if err != nil {
+		logger.Fatal("配置无效")
+	}
+	app, err := account.New(config, keys, logger)
+	if err != nil {
+		logger.Fatal("启动失败")
+	}
+	defer app.Close()
+	code, err := app.GenerateInvite()
+	if err != nil {
+		logger.Fatal("邀请码生成失败")
+	}
+	logger.Print("邀请码：", code)
+}
 func main() {
+
 	logger := log.New(os.Stdout, "staraccount ", log.LstdFlags|log.LUTC)
 	slog.SetDefault(slog.New(account.ProtocolLogHandler(os.Stderr)))
+
+	if len(os.Args) > 1 && os.Args[1] == "generate-invite" {
+		generateInvite(logger)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "dev-status" {
 		options := flag.NewFlagSet("dev-status", flag.ExitOnError)
 		filename := options.String("config", ".local/development.json", "合成配置")

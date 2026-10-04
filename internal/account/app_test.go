@@ -106,6 +106,27 @@ func registerVerified(t *testing.T, app *App, client *browser) string {
 	return raw
 }
 
+func TestInviteRegistrationSingleUse(t *testing.T) {
+	app, client, _ := fixture(t)
+	invite, err := app.GenerateInvite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	password := "invite password 123"
+	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Username: "inviteuser", Password: password, InviteCode: invite}), 201)
+	if client.cookies["star_account_session"] == nil {
+		t.Fatal("registration did not create session")
+	}
+	client.call("POST", "/api/v1/auth/logout", nil)
+	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Username: "seconduser", Password: password, InviteCode: invite}), 400)
+	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "inviteuser", Password: password}), 200)
+	badInvite, err := app.GenerateInvite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireStatus(t, client.call("POST", "/api/v1/auth/register", input{Username: "thirduser", Password: password, InviteCode: badInvite + "x"}), 400)
+}
+
 func TestRegisterVerifyLoginLogout(t *testing.T) {
 	app, client, logs := fixture(t)
 	first := client.call("POST", "/api/v1/auth/register", input{Email: "reader@example.com", Password: testPassword})
@@ -279,7 +300,7 @@ func TestPersistenceStatusAndMigration(t *testing.T) {
 	}
 	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Email: "reader@example.com", Password: testPassword}), 401)
 	var version int
-	if err = reopened.db.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version != 2 {
+	if err = reopened.db.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version != 3 {
 		t.Fatal("migration failed")
 	}
 }

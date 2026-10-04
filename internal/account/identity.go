@@ -103,7 +103,11 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 			return
 		}
 		if action == "restore" {
-			address, err := normalizeEmail(request.PostForm.Get("email"))
+			identifier := request.PostForm.Get("username")
+			if identifier == "" {
+				identifier = request.PostForm.Get("email")
+			}
+			address, err := normalizeIdentifier(identifier)
 			secret := request.PostForm.Get("password")
 			if err != nil || !validPassword(secret) || !app.allow("restore:"+address, 5, 15*time.Minute) {
 				app.respond(writer, request, 400, "RECOVERY_FAILED", "无法恢复，请检查凭据、账户状态和恢复期限")
@@ -221,7 +225,7 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 
 func (app *App) restore(ctx context.Context, address, password string) error {
 	var userID, passwordHash string
-	err := app.db.QueryRowContext(ctx, "SELECT id,password_hash FROM users WHERE email=? AND verified=1 AND status='deactivated' AND recovery_until>?", address, app.now().Unix()).Scan(&userID, &passwordHash)
+	err := app.db.QueryRowContext(ctx, "SELECT id,password_hash FROM users WHERE (email=? OR username=?) AND verified=1 AND status='deactivated' AND recovery_until>?", address, address, app.now().Unix()).Scan(&userID, &passwordHash)
 	candidate := passwordHash
 	if candidate == "" {
 		candidate = app.dummyHash

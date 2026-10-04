@@ -340,9 +340,9 @@ func (app *App) oidcLogin(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if identity == nil || force {
-		email, err := normalizeEmail(request.PostForm.Get("email"))
+		username, err := normalizeUsername(request.PostForm.Get("username"))
 		password := request.PostForm.Get("password")
-		if err != nil || !validPassword(password) || !app.allow("oidc-email:"+email, 5, 15*time.Minute) {
+		if err != nil || !validPassword(password) || !app.allow("oidc-username:"+username, 5, 15*time.Minute) {
 			app.respond(writer, request, 401, "INVALID_CREDENTIALS", "无法登录，请检查邮箱和密码")
 			return
 		}
@@ -353,7 +353,7 @@ func (app *App) oidcLogin(writer http.ResponseWriter, request *http.Request) {
 			app.respond(writer, request, 503, "BUSY", "请稍后重试")
 			return
 		}
-		raw, err := app.login(email, password, "")
+		raw, err := app.login(username, password, "")
 		if err != nil {
 			app.respond(writer, request, 401, "INVALID_CREDENTIALS", "无法登录，请检查邮箱、密码和账户状态")
 			return

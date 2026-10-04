@@ -53,9 +53,11 @@ type page struct {
 	Sessions  []SessionView
 }
 type input struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Token    string `json:"token"`
+	Username   string `json:"username"`
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	InviteCode string `json:"invite_code"`
+	Token      string `json:"token"`
 }
 
 func New(config Config, keys []byte, logger *log.Logger) (*App, error) {
@@ -258,7 +260,7 @@ func (app *App) action(action string) http.HandlerFunc {
 			}
 		} else if contentType == "application/x-www-form-urlencoded" {
 			err = request.ParseForm()
-			values = input{Email: request.PostForm.Get("email"), Password: request.PostForm.Get("password"), Token: request.PostForm.Get("token")}
+			values = input{Username: request.PostForm.Get("username"), Email: request.PostForm.Get("email"), Password: request.PostForm.Get("password"), InviteCode: request.PostForm.Get("invite_code"), Token: request.PostForm.Get("token")}
 		} else {
 			app.respond(writer, request, 415, "CONTENT_TYPE_INVALID", "请使用页面表单或 JSON 提交")
 			return
@@ -274,21 +276,60 @@ func (app *App) action(action string) http.HandlerFunc {
 			app.respond(writer, request, 503, "BUSY", "服务繁忙，请稍后重试")
 			return
 		}
-		if action == "register" || action == "request-reset" || action == "login" {
-			values.Email, err = normalizeEmail(values.Email)
-			if err != nil {
-				app.respond(writer, request, 400, "INPUT_INVALID", "请输入有效邮箱")
+		if action == "register" && (values.Username != "" || values.InviteCode != "") {
+			values.Username, err = normalizeUsername(values.Username)
+			if err != nil || !validPassword(values.Password) || len(values.InviteCode) < 20 || len(values.InviteCode) > 128 {
+				app.respond(writer, request, 400, "INPUT_INVALID", "请输入有效用户名、密码和邀请码")
 				return
+			}
+			if !app.allow("invite-register:"+values.Username, 5, 15*time.Minute) {
+				app.respond(writer, request, 429, "RATE_LIMITED", "尝试过于频繁，请稍后重试")
+				return
+			}
+			if err = app.registerInvite(values.Username, values.Password, values.InviteCode); errors.Is(err, errInvite) {
+				app.respond(writer, request, 400, "INVITE_INVALID", "邀请码无效、已使用或用户名已存在")
+				return
+			} else if err != nil {
+				app.internal(writer, request)
+				return
+			}
+			raw, loginErr := app.login(values.Username, values.Password, "")
+			if loginErr != nil {
+				app.internal(writer, request)
+				return
+			}
+			setSession(writer, raw, false)
+			app.audit("invite_registration_succeeded")
+			app.respond(writer, request, 201, "REGISTERED", "注册成功，已登录新星账户。")
+			return
+		}
+		if action == "register" || action == "request-reset" || action == "login" {
+			if action == "login" && values.Username != "" {
+				values.Username, err = normalizeUsername(values.Username)
+				if err != nil {
+					app.respond(writer, request, 400, "INPUT_INVALID", "请输入有效用户名")
+					return
+				}
+			} else {
+				values.Email, err = normalizeEmail(values.Email)
+				if err != nil {
+					app.respond(writer, request, 400, "INPUT_INVALID", "请输入有效邮箱")
+					return
+				}
 			}
 			if (action == "register" || action == "login") && !validPassword(values.Password) {
 				app.respond(writer, request, 400, "INPUT_INVALID", "密码需至少 12 个字符，且不超过 72 个 UTF-8 字节")
 				return
 			}
-			if app.config.MailMode == "synthetic" && !syntheticEmail(values.Email) {
+			if values.Username == "" && app.config.MailMode == "synthetic" && !syntheticEmail(values.Email) {
 				app.respond(writer, request, 400, "SYNTHETIC_ONLY", "当前仅供合成测试，请使用 example.com 或 .test 邮箱")
 				return
 			}
-			allowed := app.allow("email:"+action+":"+values.Email, 5, 15*time.Minute)
+			identifier := values.Email
+			if values.Username != "" {
+				identifier = values.Username
+			}
+			allowed := app.allow("login:"+action+":"+identifier, 5, 15*time.Minute)
 			if !allowed {
 				if action == "login" {
 					writer.Header().Set("Retry-After", "900")
@@ -335,7 +376,11 @@ func (app *App) action(action string) http.HandlerFunc {
 			if cookie, cookieErr := request.Cookie("star_account_session"); cookieErr == nil {
 				old = cookie.Value
 			}
-			raw, loginErr := app.login(values.Email, values.Password, old)
+			identifier := values.Email
+			if values.Username != "" {
+				identifier = values.Username
+			}
+			raw, loginErr := app.login(identifier, values.Password, old)
 			if errors.Is(loginErr, errCredential) {
 				app.audit("login_failed")
 				app.respond(writer, request, 401, "INVALID_CREDENTIALS", "无法登录，请检查邮箱、密码和验证邮件，或申请找回。")

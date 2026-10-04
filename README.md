@@ -12,9 +12,9 @@ go run ./cmd/staraccount init-dev
 go run ./cmd/staraccount
 ```
 
-初始化只需一次，不覆盖已有配置和密钥。打开 http://127.0.0.1:4100 ，使用 `reader@example.com` 等虚构邮箱和至少 12 字符、至多 72 UTF-8 字节的测试密码。注册后等待约一秒，打开“合成测试收件箱”，确认验证，然后登录、退出、找回密码。邮件不外发。Ctrl+C 停止。
+初始化只需一次，不覆盖已有配置和密钥。先生成一次性邀请码：`go run ./cmd/staraccount generate-invite`。打开 http://127.0.0.1:4100，使用用户名、至少 12 字符且不超过 72 UTF-8 字节的密码和邀请码注册；注册成功后自动登录。邀请码只可成功使用一次，明文只在命令输出中显示，数据库仅保存哈希。Ctrl+C 停止。
 
-页面 `/register`、`/login`、`/forgot`、`/verify`、`/reset`、`/config` 均为无 JavaScript SSR 表单。令牌 GET 不消费，POST 需 CSRF。重复注册未验证邮箱使旧验证链接失效，重复点击已消费链接返回可理解错误。
+页面 `/register`、`/login`、`/security`、`/recover`、`/config` 均为无 JavaScript SSR 表单。注册只接受 `username/password/invite_code`；登录接受 `username/password`。邀请码消费与账户创建在同一事务中完成，重复使用、错误邀请码和已存在用户名均失败。
 
 ## 检查
 
@@ -32,7 +32,7 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 测试实例请使用独立 database 和 key_file、端口/origin；不要复制开发数据库去做真实用户测试。
 
 `GET /health`、`GET /api/v1/config` 提供状态；`GET /api/v1/csrf` 获得 API 请求的 CSRF token（同时保留 cookie），之后 POST 使用同源 Origin 与 X-CSRF-Token。
-账户端点为 `/api/v1/auth/register`、`verify-email`、`login`、`logout`、`request-reset`、`reset-password` 和 GET `session`。字段为 email/password/token，按相应操作提供。
+账户端点为 `/api/v1/auth/register`、`verify-email`、`login`、`logout`、`request-reset`、`reset-password` 和 GET `session`。邀请码注册字段为 username/password/invite_code；登录字段为 username/password。旧邮箱接口仅保留兼容测试，不作为当前页面注册流程。
 注册与找回统一返回 202 REQUEST_ACCEPTED，不暴露账户或 token。JSON 正文最多 8 KiB，登录与表单均限流。
 
 密码使用 bcrypt cost 10；会话令牌与验证令牌只存哈希；待发邮件使用 AES-GCM 加密。单 SQLite 写连接，WAL/FULL/FK，2 秒忙等待。编号迁移 `internal/account/001_init.sql`，失败不会清空或替换损坏库。
