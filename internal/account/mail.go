@@ -144,6 +144,13 @@ func (app *App) Worker(ctx context.Context) {
 			}
 			cancel()
 		case <-cleanup.C:
+			if app.now().Unix()-app.lastBackup >= 3600 {
+				if _, err := app.Backup(); err != nil {
+					app.logger.Print("backup_failed")
+				} else {
+					app.lastBackup = app.now().Unix()
+				}
+			}
 			if err := app.Cleanup(); err != nil {
 				app.logger.Print("cleanup_failed")
 			}

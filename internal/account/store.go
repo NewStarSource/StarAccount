@@ -32,6 +32,9 @@ var inviteSchema string
 //go:embed 004_profile.sql
 var profileSchema string
 
+//go:embed 005_recovery.sql
+var recoverySchema string
+
 func randomBytes(size int) []byte {
 	output := make([]byte, size)
 	if _, err := rand.Read(output); err != nil {
@@ -53,7 +56,7 @@ func openDatabase(filename string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(filename), 0700); err != nil {
 		return nil, err
 	}
-	database, err := sql.Open("sqlite", filename+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(2000)&_pragma=synchronous(FULL)&_pragma=journal_mode(WAL)")
+	database, err := sql.Open("sqlite", filename+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(2000)&_pragma=synchronous(FULL)&_pragma=journal_mode(WAL)&_pragma=secure_delete(ON)")
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +72,7 @@ func openDatabase(filename string) (*sql.DB, error) {
 		return nil, err
 	}
 	var version int
-	if err = transaction.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version < 1 || version > 4 {
+	if err = transaction.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version < 1 || version > 5 {
 		transaction.Rollback()
 		database.Close()
 		return nil, errors.New("unsupported schema version")
@@ -95,6 +98,13 @@ func openDatabase(filename string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+	if version < 5 {
+		if _, err = transaction.Exec(recoverySchema); err != nil {
+			transaction.Rollback()
+			database.Close()
+			return nil, err
+		}
+	}
 	if err = transaction.Commit(); err != nil {
 		database.Close()
 		return nil, err
@@ -111,7 +121,7 @@ func openDatabase(filename string) (*sql.DB, error) {
 		database.Close()
 		return nil, errors.New("sqlite safety settings unavailable")
 	}
-	if err = os.Chmod(filename, 0600); err != nil {
+	if err = restrictPath(filename, false); err != nil {
 		database.Close()
 		return nil, err
 	}
@@ -163,6 +173,8 @@ func (app *App) audit(event string) {
 }
 
 func (app *App) Cleanup() error {
+	app.operationsMu.Lock()
+	defer app.operationsMu.Unlock()
 	timestamp := app.now().Unix()
 	transaction, err := app.db.Begin()
 	if err != nil {
@@ -173,7 +185,7 @@ func (app *App) Cleanup() error {
 		query  string
 		cutoff int64
 	}{
-		{"DELETE FROM identity_events WHERE occurred_at < ?", timestamp - 30*86400},
+		{"UPDATE users SET status='deleted',password_hash='',email='deleted:'||id,username='deleted:'||id,display_name='',bio='',location='',website='' WHERE status='deactivated' AND recovery_until<=?", timestamp},
 		{"DELETE FROM oidc_requests WHERE expires_at <= ?", timestamp},
 		{"DELETE FROM oidc_tokens WHERE expires_at <= ?", timestamp},
 		{"DELETE FROM limits WHERE reset_at <= ?", timestamp},
@@ -188,5 +200,11 @@ func (app *App) Cleanup() error {
 			return err
 		}
 	}
-	return transaction.Commit()
+	if err = transaction.Commit(); err != nil {
+		return err
+	}
+	if err = app.mirrorSecurityEvents(); err != nil {
+		return err
+	}
+	return app.scrubBackups()
 }

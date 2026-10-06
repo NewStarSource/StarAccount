@@ -7,9 +7,11 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -56,7 +58,7 @@ func (app *App) identityRoutes(router chi.Router) {
 			return
 		}
 
-		app.render(writer, request, 200, page{Name: "profile_view", Identity: identity, Token: username})
+		app.render(writer, request, 200, page{Name: "profile_view", Identity: identity, Token: username, Profile: publicProfile{displayName, bio, location, website}})
 	})
 
 	router.Get("/profile", func(writer http.ResponseWriter, request *http.Request) {
@@ -81,7 +83,7 @@ func (app *App) identityRoutes(router chi.Router) {
 			return
 		}
 
-		app.render(writer, request, 200, page{Name: "profile_edit", Identity: identity, Token: displayName})
+		app.render(writer, request, 200, page{Name: "profile_edit", Identity: identity, Profile: publicProfile{displayName, bio, location, website}})
 	})
 
 	router.Get("/security", func(writer http.ResponseWriter, request *http.Request) {
@@ -199,23 +201,30 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 			website := strings.TrimSpace(request.PostForm.Get("website"))
 
 			// Validate inputs
-			if len(displayName) > 100 {
+			if !utf8.ValidString(displayName) || utf8.RuneCountInString(displayName) > 100 {
 				app.respond(writer, request, 400, "INPUT_INVALID", "显示名称不能超过 100 个字符")
 				return
 			}
-			if len(bio) > 500 {
-				app.respond(writer, request, 400, "INPUT_INVALID", "个人简介不能超过 500 个字符")
+			if !utf8.ValidString(bio) || utf8.RuneCountInString(bio) > 2000 {
+				app.respond(writer, request, 400, "INPUT_INVALID", "个人简介不能超过 2000 个字符")
 				return
 			}
-			if len(location) > 100 {
+			if !utf8.ValidString(location) || utf8.RuneCountInString(location) > 100 {
 				app.respond(writer, request, 400, "INPUT_INVALID", "所在地不能超过 100 个字符")
 				return
 			}
-			if len(website) > 200 {
+			if !utf8.ValidString(website) || utf8.RuneCountInString(website) > 200 {
 				app.respond(writer, request, 400, "INPUT_INVALID", "网站地址不能超过 200 个字符")
 				return
 			}
 
+			if website != "" {
+				u, e := url.Parse(website)
+				if e != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+					app.respond(writer, request, 400, "INPUT_INVALID", "网站地址必须使用 http 或 https")
+					return
+				}
+			}
 			// Update profile
 			_, err = app.db.ExecContext(request.Context(),
 				"UPDATE users SET display_name=?, bio=?, location=?, website=? WHERE id=?",
@@ -375,8 +384,16 @@ func (app *App) SetSyntheticStatus(accountID, status string) error {
 
 func (app *App) identityAPI(writer http.ResponseWriter, request *http.Request) {
 	client, secret, ok := request.BasicAuth()
-	if request.Method != "GET" || !ok || app.oidcStore.AuthorizeClientIDSecret(request.Context(), client, secret) != nil {
+	if (request.Method != "GET" && !(request.URL.Path == "/internal/identity/deactivate" && request.Method == "POST")) || !ok || app.oidcStore.AuthorizeClientIDSecret(request.Context(), client, secret) != nil {
 		writeJSON(writer, 401, map[string]string{"code": "INVALID_CLIENT"})
+		return
+	}
+	if request.URL.Path == "/internal/identity/profile" {
+		app.internalProfile(writer, request)
+		return
+	}
+	if request.URL.Path == "/internal/identity/deactivate" {
+		app.internalDeactivate(writer, request)
 		return
 	}
 	if request.URL.Path == "/internal/identity/session" {
@@ -399,7 +416,7 @@ func (app *App) identityAPI(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, 400, map[string]string{"code": "INVALID_CURSOR"})
 		return
 	}
-	rows, err := app.db.QueryContext(request.Context(), "SELECT seq,event_id,account_id,COALESCE(sid,''),event_type,status,status_version,occurred_at FROM identity_events WHERE seq>? ORDER BY seq LIMIT 200", after)
+	rows, err := app.db.QueryContext(request.Context(), "SELECT seq,event_id,account_id,COALESCE(sid,''),event_type,status,status_version,occurred_at FROM identity_events WHERE seq>? AND event_type IN ('status_changed','session_revoked') ORDER BY seq LIMIT 200", after)
 	if err != nil {
 		app.internal(writer, request)
 		return

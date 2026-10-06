@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"log/slog"
@@ -84,11 +85,37 @@ func main() {
 	if err != nil {
 		logger.Fatal(err)
 	}
+	if len(flag.Args()) > 0 && flag.Args()[0] == "restore" {
+		if len(flag.Args()) != 3 {
+			logger.Fatal("restore 需要备份及新的隔离数据库路径")
+		}
+		if err = account.RestoreAccountBackup(config, keys, flag.Args()[1], flag.Args()[2]); err != nil {
+			logger.Fatal("账户恢复失败：", err)
+		}
+		logger.Print("账户隔离恢复通过，旧会话和授权凭据已清除；启动前核对双服务配置")
+		return
+	}
 	app, err := account.New(config, keys, logger)
 	if err != nil {
 		logger.Fatal("启动失败：数据库、迁移或密钥不可用")
 	}
 	defer app.Close()
+	if len(flag.Args()) > 0 {
+		var result any
+		switch flag.Args()[0] {
+		case "backup":
+			result, err = app.Backup()
+		case "diagnose":
+			result, err = app.Diagnostics()
+		default:
+			logger.Fatal("未知运行命令")
+		}
+		if err != nil {
+			logger.Fatal("运行操作失败：", err)
+		}
+		json.NewEncoder(os.Stdout).Encode(result)
+		return
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	var worker sync.WaitGroup

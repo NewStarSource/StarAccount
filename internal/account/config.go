@@ -10,18 +10,21 @@ import (
 )
 
 type Config struct {
-	Mode           string `json:"mode"`
-	Address        string `json:"address"`
-	Origin         string `json:"origin"`
-	Database       string `json:"database"`
-	KeyFile        string `json:"key_file"`
-	MailMode       string `json:"mail_mode"`
-	SMTPHost       string `json:"smtp_host"`
-	SMTPPort       int    `json:"smtp_port"`
-	MailFrom       string `json:"mail_from"`
-	OIDCSecretFile string `json:"oidc_secret_file"`
-	SigningKeyFile string `json:"signing_key_file"`
-	AtlasOrigin    string `json:"atlas_origin"`
+	Mode                string `json:"mode"`
+	Address             string `json:"address"`
+	Origin              string `json:"origin"`
+	Database            string `json:"database"`
+	KeyFile             string `json:"key_file"`
+	MailMode            string `json:"mail_mode"`
+	SMTPHost            string `json:"smtp_host"`
+	SMTPPort            int    `json:"smtp_port"`
+	MailFrom            string `json:"mail_from"`
+	OIDCSecretFile      string `json:"oidc_secret_file"`
+	SigningKeyFile      string `json:"signing_key_file"`
+	AtlasOrigin         string `json:"atlas_origin"`
+	SecurityJournalFile string `json:"security_journal_file"`
+	BackupDirectory     string `json:"backup_directory"`
+	BackupKeyFile       string `json:"backup_key_file"`
 }
 
 func LoadConfig(filename string) (Config, []byte, error) {
@@ -39,6 +42,9 @@ func LoadConfig(filename string) (Config, []byte, error) {
 	keys, err := os.ReadFile(config.KeyFile)
 	if err != nil || len(keys) != 96 {
 		return config, nil, errors.New("key_file 必须包含 96 个随机字节")
+	}
+	if err = restrictPath(config.KeyFile, false); err != nil {
+		return config, nil, err
 	}
 	return config, keys, nil
 }

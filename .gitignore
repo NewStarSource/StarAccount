@@ -9,3 +9,8 @@ bin/
 *.db-wal
 *.exe
 coverage.out
+
+*.backup
+*.backup.json
+*.backup.key
+*.security.jsonl*

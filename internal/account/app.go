@@ -26,18 +26,20 @@ import (
 var pageHTML string
 
 type App struct {
-	config    Config
-	db        *sql.DB
-	keys      []byte
-	dummyHash string
-	now       func() time.Time
-	logger    *log.Logger
-	sender    Sender
-	mailMu    sync.Mutex
-	expensive chan struct{}
-	pages     *template.Template
-	provider  *op.Provider
-	oidcStore *oidcStore
+	config       Config
+	db           *sql.DB
+	keys         []byte
+	dummyHash    string
+	now          func() time.Time
+	logger       *log.Logger
+	sender       Sender
+	mailMu       sync.Mutex
+	operationsMu sync.Mutex
+	lastBackup   int64
+	expensive    chan struct{}
+	pages        *template.Template
+	provider     *op.Provider
+	oidcStore    *oidcStore
 }
 type page struct {
 	Name      string
@@ -51,6 +53,7 @@ type page struct {
 	Failed    int
 	Force     bool
 	Sessions  []SessionView
+	Profile   publicProfile
 }
 type input struct {
 	Username   string `json:"username"`
@@ -82,6 +85,10 @@ func New(config Config, keys []byte, logger *log.Logger) (*App, error) {
 		return nil, err
 	}
 	app := &App{config: config, db: database, keys: keys, dummyHash: string(dummy), now: time.Now, logger: logger, sender: smtpSender{config}, expensive: make(chan struct{}, 2), pages: pages}
+	if err = app.initSecurityJournal(); err != nil {
+		database.Close()
+		return nil, err
+	}
 	if err = app.Cleanup(); err != nil {
 		database.Close()
 		return nil, err
@@ -94,7 +101,8 @@ func New(config Config, keys []byte, logger *log.Logger) (*App, error) {
 }
 func (app *App) Close() error { return app.db.Close() }
 
-func (app *App) Handler() http.Handler {
+func (app *App) Handler() http.Handler { return app.protectJournal(app.baseHandler()) }
+func (app *App) baseHandler() http.Handler {
 	router := chi.NewRouter()
 	app.identityRoutes(router)
 	router.Get("/oidc/login", app.oidcLogin)
@@ -212,7 +220,7 @@ func (app *App) Handler() http.Handler {
 				}
 				app.provider.ServeHTTP(writer, request)
 				return
-			case "/internal/identity/events", "/internal/identity/session":
+			case "/internal/identity/events", "/internal/identity/session", "/internal/identity/profile", "/internal/identity/deactivate":
 				app.identityAPI(writer, request)
 				return
 			}

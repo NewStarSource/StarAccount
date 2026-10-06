@@ -1,6 +1,8 @@
 # StarAccount 新星账户
 
-从零建设的 Go/chi/SQLite 账户服务，S01/S02 本地合成版本。正式规则来自 `D:/NewStarProject/SAfiles`。星图是独立的相邻 `AtlasSite` 仓库，两者不共享密码和数据库。
+从零建设的 Go/chi/SQLite 账户服务，已完成本地邀请码账户、OIDC 联调、公开资料和恢复保护。正式规则来自 `D:/NewStarProject/SAfiles`。星图是独立的相邻 `AtlasSite` 仓库，两者不共享密码和数据库。
+
+2026-10-06 更新见 [资料与恢复交付](docs/CORE_RECOVERY_2026-10-06.md)；跨服务验证和操作说明见相邻仓库的 [核心交付](../AtlasSite/docs/CORE_GAPS_2026-10-06.md) 与 [恢复步骤](../AtlasSite/docs/RUNBOOK_CORE.md)。数据库升级至 schema 5，迁移前先保存停机副本。当前仍仅允许回环 development/test，production 拒绝启动。
 
 ## 启动与验收
 
@@ -37,13 +39,13 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
 密码使用 bcrypt cost 10；会话令牌与验证令牌只存哈希；待发邮件使用 AES-GCM 加密。单 SQLite 写连接，WAL/FULL/FK，2 秒忙等待。编号迁移 `internal/account/001_init.sql`，失败不会清空或替换损坏库。
 
-会话 7 天；链接 1 小时；已失效会话与安全日志最长 30 天；未验证且无有效令牌账户 24 小时后清理。队列失败指数退避，第三次失败记录 permanent_failure，不返回账户专属失败状态给未认证请求。SMTP 模式成功后清空队列正文，合成邮箱仅本机可见。
+会话 7 天；链接 1 小时；已失效会话与一般安全日志最长 30 天；未验证且无有效令牌账户 24 小时后清理。注销恢复期 30 天，过期后清除凭据和个人资料。最小身份状态、会话撤销及凭据变更记录保留在独立签名清单中，不能随旧备份回滚。队列失败指数退避，第三次失败记录 permanent_failure，不返回账户专属失败状态给未认证请求。SMTP 模式成功后清空队列正文，合成邮箱仅本机可见。
 
 真实 SMTP 适配器已写入但未联调；用户本轮选择仅本地验收。S03 已加入本地 OIDC 授权码 + PKCE、身份状态事件、会话列表与撤销、重新认证和注销恢复测试。运行 `go run ./cmd/staraccount init-oidc` 生成本地签名密钥和客户端配置，不输出密钥；真实域名、HTTPS、生产密钥和 S04 联调仍未完成。管理路由未开放。
 
 ## Git 与恢复
 
-提交前运行上述检查，建议 `feat: establish S01 S02 local baseline`。`.local/`、data、数据库、日志、二进制与凭据不得入库；本次不自动提交或推送。
-恢复本地合成版本时先停止进程，保存整个受限 `.local` 目录；通过配置的新数据库路径建立空白演示，旧库保留可恢复。不要删除未知数据库或手工修改迁移水位。正式备份恢复与强制撤销旧凭据在 S10 验收。
+提交前运行上述检查。`.local/`、data、数据库、日志、二进制与凭据不得入库。
+本地普通快照已采用加密备份和小时/日/月保留策略，提供 backup、diagnose、restore 命令。restore 只写新的隔离目标库，核对独立清单并清除旧会话；快照之后变更过密码的账户进入 recovery_pending，旧密码不能登录。不要删除未知数据库、回滚独立清单或手工修改迁移水位；完整步骤见相邻仓库运行手册。真实离机存储、灾难恢复和发布切换仍须实际配置与演练。
 
 完整接口与交付记录位于相邻 `AtlasSite/docs/identity-contract.md`、`configuration.md`、`S01-S02.md`、`review-S01-S02.md`。实际 token 用量不可获取。
