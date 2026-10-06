@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -31,6 +32,58 @@ type identityEvent struct {
 }
 
 func (app *App) identityRoutes(router chi.Router) {
+	router.Get("/profile/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		profileID := chi.URLParam(request, "id")
+		identity, err := app.identity(request)
+		if err != nil {
+			app.internal(writer, request)
+			return
+		}
+
+		// Query user profile
+		var username, displayName, bio, location, website string
+		var createdAt int64
+		err = app.db.QueryRowContext(request.Context(),
+			"SELECT username, display_name, bio, location, website, created_at FROM users WHERE id=? AND verified=1 AND status='active'",
+			profileID).Scan(&username, &displayName, &bio, &location, &website, &createdAt)
+
+		if errors.Is(err, sql.ErrNoRows) {
+			app.respond(writer, request, 404, "NOT_FOUND", "用户不存在")
+			return
+		}
+		if err != nil {
+			app.internal(writer, request)
+			return
+		}
+
+		app.render(writer, request, 200, page{Name: "profile_view", Identity: identity, Token: username})
+	})
+
+	router.Get("/profile", func(writer http.ResponseWriter, request *http.Request) {
+		identity, err := app.identity(request)
+		if err != nil {
+			app.internal(writer, request)
+			return
+		}
+		if identity == nil {
+			http.Redirect(writer, request, "/login", 303)
+			return
+		}
+
+		// Query current user's profile
+		var displayName, bio, location, website string
+		err = app.db.QueryRowContext(request.Context(),
+			"SELECT display_name, bio, location, website FROM users WHERE id=?",
+			identity.ID).Scan(&displayName, &bio, &location, &website)
+
+		if err != nil {
+			app.internal(writer, request)
+			return
+		}
+
+		app.render(writer, request, 200, page{Name: "profile_edit", Identity: identity, Token: displayName})
+	})
+
 	router.Get("/security", func(writer http.ResponseWriter, request *http.Request) {
 		identity, err := app.identity(request)
 		if err != nil {
@@ -68,7 +121,7 @@ func (app *App) identityRoutes(router chi.Router) {
 		}
 		writeJSON(writer, 200, map[string]any{"sessions": sessions})
 	})
-	for _, action := range []string{"reauthenticate", "revoke", "revoke-all", "deactivate", "restore"} {
+	for _, action := range []string{"reauthenticate", "revoke", "revoke-all", "deactivate", "restore", "update-profile"} {
 		router.Post("/api/v1/security/"+action, app.securityAction(action))
 	}
 }
@@ -127,6 +180,54 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 			setSession(writer, "", false)
 			app.audit("account_restored")
 			app.respond(writer, request, 200, "RESTORED", "已恢复。请重新登录；原有会话不会恢复。")
+			return
+		}
+		if action == "update-profile" {
+			identity, err := app.identity(request)
+			if err != nil {
+				app.internal(writer, request)
+				return
+			}
+			if identity == nil {
+				app.respond(writer, request, 401, "SESSION_REQUIRED", "请先登录")
+				return
+			}
+
+			displayName := strings.TrimSpace(request.PostForm.Get("display_name"))
+			bio := strings.TrimSpace(request.PostForm.Get("bio"))
+			location := strings.TrimSpace(request.PostForm.Get("location"))
+			website := strings.TrimSpace(request.PostForm.Get("website"))
+
+			// Validate inputs
+			if len(displayName) > 100 {
+				app.respond(writer, request, 400, "INPUT_INVALID", "显示名称不能超过 100 个字符")
+				return
+			}
+			if len(bio) > 500 {
+				app.respond(writer, request, 400, "INPUT_INVALID", "个人简介不能超过 500 个字符")
+				return
+			}
+			if len(location) > 100 {
+				app.respond(writer, request, 400, "INPUT_INVALID", "所在地不能超过 100 个字符")
+				return
+			}
+			if len(website) > 200 {
+				app.respond(writer, request, 400, "INPUT_INVALID", "网站地址不能超过 200 个字符")
+				return
+			}
+
+			// Update profile
+			_, err = app.db.ExecContext(request.Context(),
+				"UPDATE users SET display_name=?, bio=?, location=?, website=? WHERE id=?",
+				displayName, bio, location, website, identity.ID)
+
+			if err != nil {
+				app.internal(writer, request)
+				return
+			}
+
+			app.audit("profile_updated")
+			app.respond(writer, request, 200, "UPDATED", "个人资料已更新")
 			return
 		}
 		identity, err := app.identity(request)

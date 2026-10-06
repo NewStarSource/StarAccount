@@ -297,7 +297,7 @@ func TestPersistenceStatusAndMigration(t *testing.T) {
 	}
 	requireStatus(t, client.call("POST", "/api/v1/auth/login", input{Username: "testuser", Password: testPassword}), 401)
 	var version int
-	if err = reopened.db.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version != 3 {
+	if err = reopened.db.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version != 4 {
 		t.Fatal("migration failed")
 	}
 }

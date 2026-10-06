@@ -29,6 +29,9 @@ var identitySchema string
 //go:embed 003_invite_registration.sql
 var inviteSchema string
 
+//go:embed 004_profile.sql
+var profileSchema string
+
 func randomBytes(size int) []byte {
 	output := make([]byte, size)
 	if _, err := rand.Read(output); err != nil {
@@ -66,7 +69,7 @@ func openDatabase(filename string) (*sql.DB, error) {
 		return nil, err
 	}
 	var version int
-	if err = transaction.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version < 1 || version > 3 {
+	if err = transaction.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version < 1 || version > 4 {
 		transaction.Rollback()
 		database.Close()
 		return nil, errors.New("unsupported schema version")
@@ -80,6 +83,13 @@ func openDatabase(filename string) (*sql.DB, error) {
 	}
 	if version <= 2 {
 		if _, err = transaction.Exec(inviteSchema); err != nil {
+			transaction.Rollback()
+			database.Close()
+			return nil, err
+		}
+	}
+	if version <= 3 {
+		if _, err = transaction.Exec(profileSchema); err != nil {
 			transaction.Rollback()
 			database.Close()
 			return nil, err

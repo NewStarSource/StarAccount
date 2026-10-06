@@ -1,0 +1,7 @@
+-- S07: User profile editing
+ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN location TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN website TEXT NOT NULL DEFAULT '';
+
+INSERT INTO schema_migrations VALUES(4);
