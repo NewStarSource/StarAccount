@@ -25,6 +25,9 @@ import (
 //go:embed page.html
 var pageHTML string
 
+//go:embed profile.js
+var profileJS string
+
 type App struct {
 	config       Config
 	db           *sql.DB
@@ -79,7 +82,7 @@ func New(config Config, keys []byte, logger *log.Logger) (*App, error) {
 		database.Close()
 		return nil, err
 	}
-	pages, err := template.New("page").Parse(pageHTML)
+	pages, err := template.New("page").Funcs(template.FuncMap{"profileMarkdown": renderProfileMarkdown}).Parse(pageHTML)
 	if err != nil {
 		database.Close()
 		return nil, err
@@ -105,6 +108,7 @@ func (app *App) Handler() http.Handler { return app.protectJournal(app.baseHandl
 func (app *App) baseHandler() http.Handler {
 	router := chi.NewRouter()
 	app.identityRoutes(router)
+	app.profileMarkdownRoutes(router)
 	router.Get("/oidc/login", app.oidcLogin)
 	router.Post("/oidc/login", app.oidcLogin)
 	router.Get("/health", func(writer http.ResponseWriter, request *http.Request) {
@@ -177,7 +181,7 @@ func (app *App) baseHandler() http.Handler {
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "DENY")
 		writer.Header().Set("X-Robots-Tag", "noindex, nofollow")
-		writer.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+		writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		if request.Host != app.config.Address {
 			app.respond(writer, request, 400, "HOST_INVALID", "请求地址无效")
 			return
@@ -190,7 +194,12 @@ func (app *App) baseHandler() http.Handler {
 			app.respond(writer, request, 403, "ORIGIN_INVALID", "请在账户网站内完成操作")
 			return
 		}
-		request.Body = http.MaxBytesReader(writer, request.Body, 8192)
+		bodyLimit := int64(8192)
+		if request.URL.Path == "/api/v1/security/update-profile" || request.URL.Path == "/api/v1/profile/preview" {
+			// Percent-encoded Unicode in the bounded profile fields needs more than 8 KiB.
+			bodyLimit = 32768
+		}
+		request.Body = http.MaxBytesReader(writer, request.Body, bodyLimit)
 		if app.provider != nil {
 			switch request.URL.Path {
 			case "/.well-known/openid-configuration", "/keys", "/authorize", "/authorize/callback", "/oauth/token", "/userinfo":

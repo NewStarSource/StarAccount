@@ -205,7 +205,7 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 				app.respond(writer, request, 400, "INPUT_INVALID", "显示名称不能超过 100 个字符")
 				return
 			}
-			if !utf8.ValidString(bio) || utf8.RuneCountInString(bio) > 2000 {
+			if !validProfileBio(bio) {
 				app.respond(writer, request, 400, "INPUT_INVALID", "个人简介不能超过 2000 个字符")
 				return
 			}
