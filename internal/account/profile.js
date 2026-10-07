@@ -8,7 +8,26 @@ document.addEventListener("DOMContentLoaded", () => {
   const saveButton = form.querySelector('[type="submit"]');
   let request, previewRevision = 0, revision = 0, saving = false;
 
-  form.addEventListener("input", () => { revision++; status.textContent = "未保存"; });
+  const fieldErrors = new Map();
+  ["display_name", "bio", "location", "website"].forEach(name => {
+    const input = form.elements[name], error = document.createElement("p");
+    error.id = "error-" + name; error.className = "field-error"; error.hidden = true;
+    input.insertAdjacentElement("afterend", error); fieldErrors.set(name, error);
+    input.setAttribute("aria-describedby", error.id);
+    input.addEventListener("input", () => { error.hidden = true; input.removeAttribute("aria-invalid"); });
+  });
+  const clearErrors = () => fieldErrors.forEach((error, name) => {
+    error.hidden = true; form.elements[name].removeAttribute("aria-invalid");
+  });
+  const showError = (name, message) => {
+    const error = fieldErrors.get(name); if (!error) return;
+    error.textContent = message; error.hidden = false;
+    const input = form.elements[name]; input.setAttribute("aria-invalid", "true");
+    if (name === "bio" && input.hidden) modes[0].click();
+    input.focus();
+  };
+
+  form.addEventListener("input", () => { revision++; status.textContent = "未保存"; delete status.dataset.feedback; });
   modes.forEach(button => button.addEventListener("click", async () => {
     const showingPreview = button.dataset.bioMode === "preview";
     bio.hidden = showingPreview;
@@ -36,14 +55,15 @@ document.addEventListener("DOMContentLoaded", () => {
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (saving) return;
+    clearErrors(); delete status.dataset.feedback;
     const savedRevision = revision;
     saving = true; saveButton.disabled = true; status.textContent = "保存中…";
     try {
       const response = await fetch(form.action, {method: "POST", body: new URLSearchParams(new FormData(form)), headers: {Accept: "application/json"}});
       const result = await response.json();
-      if (!response.ok) throw new Error(result.message || "保存失败，请重试");
+      if (!response.ok) { showError(result.field, result.message); throw new Error(result.message || "保存失败，请重试"); }
       status.textContent = revision === savedRevision ? "已保存" : "有修改未保存";
-    } catch (error) { status.textContent = error.message; }
+    } catch (error) { status.dataset.feedback = "error"; status.textContent = error.name === "TypeError" ? "连接中断，修改尚未保存。" : error.name === "SyntaxError" ? "保存结果未确认，请刷新后检查。" : error.message; }
     finally { saving = false; saveButton.disabled = false; }
   });
 });

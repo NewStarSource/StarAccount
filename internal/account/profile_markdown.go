@@ -20,6 +20,14 @@ func validProfileBio(value string) bool {
 	return utf8.ValidString(value) && utf8.RuneCountInString(value) <= 2000 && !strings.ContainsRune(value, 0)
 }
 
+func (app *App) profileInputError(w http.ResponseWriter, r *http.Request, field, message string) {
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		writeJSON(w, 400, map[string]any{"ok": false, "code": "INPUT_INVALID", "field": field, "message": message})
+		return
+	}
+	app.respond(w, r, 400, "INPUT_INVALID", message)
+}
+
 func renderProfileMarkdown(value string) template.HTML {
 	source := []byte(value)
 	doc := profileMarkdown.Parser().Parse(gmtext.NewReader(source))
@@ -42,6 +50,14 @@ func renderProfileMarkdown(value string) template.HTML {
 }
 
 func (app *App) profileMarkdownRoutes(router chi.Router) {
+	router.Get("/assets/account.css", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		w.Write([]byte(accountCSS))
+	})
+	router.Get("/assets/forms.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Write([]byte(formsJS))
+	})
 	router.Get("/assets/profile.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		w.Write([]byte(profileJS))

@@ -28,6 +28,12 @@ var pageHTML string
 //go:embed profile.js
 var profileJS string
 
+//go:embed account.css
+var accountCSS string
+
+//go:embed forms.js
+var formsJS string
+
 type App struct {
 	config       Config
 	db           *sql.DB
@@ -181,7 +187,7 @@ func (app *App) baseHandler() http.Handler {
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "DENY")
 		writer.Header().Set("X-Robots-Tag", "noindex, nofollow")
-		writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+		writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		if request.Host != app.config.Address {
 			app.respond(writer, request, 400, "HOST_INVALID", "请求地址无效")
 			return
@@ -392,7 +398,7 @@ func (app *App) action(action string) http.HandlerFunc {
 			raw, loginErr := app.login(identifier, values.Password, old)
 			if errors.Is(loginErr, errCredential) {
 				app.audit("login_failed")
-				app.respond(writer, request, 401, "INVALID_CREDENTIALS", "无法登录，请检查邮箱、密码和验证邮件，或申请找回。")
+				app.respond(writer, request, 401, "INVALID_CREDENTIALS", "无法登录，请检查用户名、密码和账户状态。")
 				return
 			} else if loginErr != nil {
 				app.internal(writer, request)

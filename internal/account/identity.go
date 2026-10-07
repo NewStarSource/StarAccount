@@ -202,26 +202,26 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 
 			// Validate inputs
 			if !utf8.ValidString(displayName) || utf8.RuneCountInString(displayName) > 100 {
-				app.respond(writer, request, 400, "INPUT_INVALID", "显示名称不能超过 100 个字符")
+				app.profileInputError(writer, request, "display_name", "显示名称不能超过 100 个字符")
 				return
 			}
 			if !validProfileBio(bio) {
-				app.respond(writer, request, 400, "INPUT_INVALID", "个人简介不能超过 2000 个字符")
+				app.profileInputError(writer, request, "bio", "个人简介不能超过 2000 个字符")
 				return
 			}
 			if !utf8.ValidString(location) || utf8.RuneCountInString(location) > 100 {
-				app.respond(writer, request, 400, "INPUT_INVALID", "所在地不能超过 100 个字符")
+				app.profileInputError(writer, request, "location", "所在地不能超过 100 个字符")
 				return
 			}
 			if !utf8.ValidString(website) || utf8.RuneCountInString(website) > 200 {
-				app.respond(writer, request, 400, "INPUT_INVALID", "网站地址不能超过 200 个字符")
+				app.profileInputError(writer, request, "website", "网站地址不能超过 200 个字符")
 				return
 			}
 
 			if website != "" {
 				u, e := url.Parse(website)
 				if e != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
-					app.respond(writer, request, 400, "INPUT_INVALID", "网站地址必须使用 http 或 https")
+					app.profileInputError(writer, request, "website", "网站地址必须使用 http 或 https")
 					return
 				}
 			}

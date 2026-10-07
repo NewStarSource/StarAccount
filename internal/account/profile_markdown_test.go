@@ -1,6 +1,7 @@
 package account
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -46,6 +47,12 @@ func TestProfileMarkdownPreviewAndPersistence(t *testing.T) {
 	requireStatus(t, securityCall(client, "update-profile", url.Values{"bio": {fullBio}}), 200)
 	requireStatus(t, securityCall(client, "update-profile", url.Values{"bio": {fullBio + "汉"}}), 400)
 	requireStatus(t, securityCall(client, "update-profile", url.Values{"bio": {bio}}), 200)
+	invalid := securityCall(client, "update-profile", url.Values{"website": {"javascript:alert(1)"}})
+	requireStatus(t, invalid, 400)
+	var fieldResponse struct{ Field string }
+	if json.Unmarshal(invalid.Body.Bytes(), &fieldResponse) != nil || fieldResponse.Field != "website" {
+		t.Fatal("profile validation must identify the invalid field", invalid.Body.String())
+	}
 	if err := app.db.QueryRow("SELECT bio FROM users WHERE id=?", accountID).Scan(&stored); err != nil || stored != bio {
 		t.Fatal("Markdown source was not preserved", err)
 	}
