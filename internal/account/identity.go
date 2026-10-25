@@ -179,7 +179,7 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 				app.respond(writer, request, 400, "RECOVERY_FAILED", "无法恢复，请检查凭据、账户状态和恢复期限")
 				return
 			}
-			setSession(writer, "", false)
+			setSession(writer, "", app.config.secure())
 			app.audit("account_restored")
 			app.respond(writer, request, 200, "RESTORED", "已恢复。请重新登录；原有会话不会恢复。")
 			return
@@ -326,7 +326,7 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 			return
 		}
 		if action != "revoke" || request.PostForm.Get("session_id") == identity.SessionID {
-			setSession(writer, "", false)
+			setSession(writer, "", app.config.secure())
 		}
 		app.audit("security_" + action)
 		app.respond(writer, request, 200, "UPDATED", "操作完成，受影响会话已撤销。注销恢复期为 30 天；恢复必须重新验证。")

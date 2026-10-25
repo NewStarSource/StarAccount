@@ -35,6 +35,9 @@ var profileSchema string
 //go:embed 005_recovery.sql
 var recoverySchema string
 
+//go:embed 006_recovery_codes.sql
+var recoveryCodeSchema string
+
 func randomBytes(size int) []byte {
 	output := make([]byte, size)
 	if _, err := rand.Read(output); err != nil {
@@ -72,7 +75,7 @@ func openDatabase(filename string) (*sql.DB, error) {
 		return nil, err
 	}
 	var version int
-	if err = transaction.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version < 1 || version > 5 {
+	if err = transaction.QueryRow("SELECT max(version) FROM schema_migrations").Scan(&version); err != nil || version < 1 || version > 6 {
 		transaction.Rollback()
 		database.Close()
 		return nil, errors.New("unsupported schema version")
@@ -100,6 +103,13 @@ func openDatabase(filename string) (*sql.DB, error) {
 	}
 	if version < 5 {
 		if _, err = transaction.Exec(recoverySchema); err != nil {
+			transaction.Rollback()
+			database.Close()
+			return nil, err
+		}
+	}
+	if version < 6 {
+		if _, err = transaction.Exec(recoveryCodeSchema); err != nil {
 			transaction.Rollback()
 			database.Close()
 			return nil, err
@@ -189,6 +199,7 @@ func (app *App) Cleanup() error {
 		{"DELETE FROM oidc_requests WHERE expires_at <= ?", timestamp},
 		{"DELETE FROM oidc_tokens WHERE expires_at <= ?", timestamp},
 		{"DELETE FROM limits WHERE reset_at <= ?", timestamp},
+		{"DELETE FROM recovery_codes WHERE expires_at<=? OR user_id IN (SELECT id FROM users WHERE status IN ('deleted','deactivated','suspended'))", timestamp},
 		{"DELETE FROM security_events WHERE created_at < ?", timestamp - 30*86400},
 		{"DELETE FROM sessions WHERE COALESCE(revoked_at,expires_at) < ?", timestamp - 30*86400},
 		{"DELETE FROM mail_jobs WHERE expires_at <= ?", timestamp},

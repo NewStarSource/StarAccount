@@ -1,51 +1,40 @@
 # StarAccount 新星账户
 
-从零建设的 Go/chi/SQLite 账户服务，已完成本地邀请码账户、OIDC 联调、公开资料和恢复保护。正式规则来自 `D:/NewStarProject/SAfiles`。星图是独立的相邻 `AtlasSite` 仓库，两者不共享密码和数据库。
+独立 Go/chi/SQLite 账户与 OIDC 服务，配合相邻 AtlasSite 使用。数据库版本 **6**。支持邀请码注册、一次性恢复码、公开资料、会话撤销、注销恢复、加密备份与凭据防回滚。
 
-2026-10-06 更新见 [资料与恢复交付](docs/CORE_RECOVERY_2026-10-06.md)；跨服务验证和操作说明见相邻仓库的 [核心交付](../AtlasSite/docs/CORE_GAPS_2026-10-06.md) 与 [恢复步骤](../AtlasSite/docs/RUNBOOK_CORE.md)。数据库升级至 schema 5，迁移前先保存停机副本。当前仍仅允许回环 development/test，production 拒绝启动。
+## 本地启动
 
-## 启动与验收
-
-需要 Go 1.26.9 或更新版本；`go.mod` 推荐工具链为 Go 1.27.2，CI 使用相同版本。Go 1.27 分支应使用 1.27.2 或更新补丁，默认 `GOTOOLCHAIN=auto` 会按模块配置选择工具链。在本目录执行：
+需要 Go **1.27.3 或更新的修复版本**，最低模块版本 1.26.10。
 
 ```powershell
-go mod download
 go run ./cmd/staraccount init-dev
+go run ./cmd/staraccount init-oidc
+go run ./cmd/staraccount generate-invite
 go run ./cmd/staraccount
 ```
 
-初始化只需一次，不覆盖已有配置和密钥。先生成一次性邀请码：`go run ./cmd/staraccount generate-invite`。打开 http://127.0.0.1:4100，使用用户名、至少 12 字符且不超过 72 UTF-8 字节的密码和邀请码注册；注册成功后自动登录。邀请码只可成功使用一次，明文只在命令输出中显示，数据库仅保存哈希。Ctrl+C 停止。
+打开 http://127.0.0.1:4100。用户名 3–32 字符，密码至少 12 字符且最多 72 UTF-8 字节。邀请码单次使用，明文仅生成时输出。配置与密钥位于忽略的 `.local/`；初始化不会覆盖旧文件。生产必须生成全新密钥和空数据库，不能沿用开发账户。
 
-页面 `/register`、`/login`、`/security`、`/recover`、`/config` 均为无 JavaScript SSR 表单。注册只接受 `username/password/invite_code`；登录接受 `username/password`。邀请码消费与账户创建在同一事务中完成，重复使用、错误邀请码和已存在用户名均失败。
+## 账户恢复
 
-## 检查
+注册成功后会显示一枚恢复码，仅显示一次、最长一年有效、只能使用一次。请离线保存。忘记密码从 `/forgot` 使用用户名、恢复码与新密码找回；旧会话和恢复码立即失效。已有用户从 `/security/recovery` 验证当前密码后生成或替换恢复码，旧码随即失效。
+
+`/recover` 用于在 30 天内恢复已注销账户，要求原密码；停用账户不能通过恢复入口解封。普通备份不保存恢复码。灾难恢复后 `recovery_pending` 账户必须经运行人员独立核验本人，再使用受控命令签发 15 分钟有效码。任何找回方式都不能替代停用/注销规则。
+
+默认生产模式为 `mail_mode=disabled`，恢复不依赖 SMTP。开发 `synthetic` 模式提供本机合成收件箱，生产禁止该模式。若未来启用 SMTP，凭据由 `STARACCOUNT_SMTP_USER/PASSWORD` 提供，必须加密连接并完成真实投递验收；邀请码账户的内部邮箱不可用于真实邮件找回。
+
+## 检查与正式运行
 
 ```powershell
-go test ./... -count=1
+go test ./... -count=1 -timeout 120s
 go vet ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 ```
 
-测试用临时 SQLite 文件和合成数据，不读取运行中的演示账户。CI 还在 Linux 执行 race 检测；当前 Windows 未启用 CGO，不宣称本地 race 已通过。
+两端完整发布检查位于 AtlasSite 的 `scripts/check_release.py`。服务器上的原生 Linux race、vet、漏洞扫描和 HTTPS/OIDC 联调已通过；Windows 无 CGO 时不运行 race。当前生产入口为 https://account.runnewstar.xyz，星图为 https://atlas.runnewstar.xyz。
 
-## 配置、API 与数据
+生产只监听回环地址，由同机 HTTPS 代理覆盖转发头，Cookie 使用 Secure、HttpOnly、SameSite=Lax。生产初始化脚本与 systemd 模板位于相邻 AtlasSite 仓库的 `scripts/` 和 `deploy/ubuntu/`，两端遵循相同的身份约定：
 
-配置保存在 `.local/development.json`，密钥是 `.local/development.keys` 中 96 个随机字节。配置文件路径通过 `-config` 指定；development/test 只允许回环监听，生产模式拒绝启动。
-测试实例请使用独立 database 和 key_file、端口/origin；不要复制开发数据库去做真实用户测试。
+- [身份约定](../AtlasSite/docs/identity-contract.md)
 
-`GET /health`、`GET /api/v1/config` 提供状态；`GET /api/v1/csrf` 获得 API 请求的 CSRF token（同时保留 cookie），之后 POST 使用同源 Origin 与 X-CSRF-Token。
-账户端点为 `/api/v1/auth/register`、`login`、`logout`、`request-reset`、`reset-password` 和 GET `session`。邀请码注册字段为 username/password/invite_code；登录字段为 username/password。新注册只接受邀请码方式，旧邮箱验证流程已移除。
-注册与找回统一返回 202 REQUEST_ACCEPTED，不暴露账户或 token。JSON 正文最多 8 KiB，登录与表单均限流。
-
-密码使用 bcrypt cost 10；会话令牌与验证令牌只存哈希；待发邮件使用 AES-GCM 加密。单 SQLite 写连接，WAL/FULL/FK，2 秒忙等待。编号迁移 `internal/account/001_init.sql`，失败不会清空或替换损坏库。
-
-会话 7 天；链接 1 小时；已失效会话与一般安全日志最长 30 天；未验证且无有效令牌账户 24 小时后清理。注销恢复期 30 天，过期后清除凭据和个人资料。最小身份状态、会话撤销及凭据变更记录保留在独立签名清单中，不能随旧备份回滚。队列失败指数退避，第三次失败记录 permanent_failure，不返回账户专属失败状态给未认证请求。SMTP 模式成功后清空队列正文，合成邮箱仅本机可见。
-
-真实 SMTP 适配器已写入但未联调；用户本轮选择仅本地验收。S03 已加入本地 OIDC 授权码 + PKCE、身份状态事件、会话列表与撤销、重新认证和注销恢复测试。运行 `go run ./cmd/staraccount init-oidc` 生成本地签名密钥和客户端配置，不输出密钥；真实域名、HTTPS、生产密钥和 S04 联调仍未完成。管理路由未开放。
-
-## Git 与恢复
-
-提交前运行上述检查。`.local/`、data、数据库、日志、二进制与凭据不得入库。
-本地普通快照已采用加密备份和小时/日/月保留策略，提供 backup、diagnose、restore 命令。restore 只写新的隔离目标库，核对独立清单并清除旧会话；快照之后变更过密码的账户进入 recovery_pending，旧密码不能登录。不要删除未知数据库、回滚独立清单或手工修改迁移水位；完整步骤见相邻仓库运行手册。真实离机存储、灾难恢复和发布切换仍须实际配置与演练。
-
-完整接口与交付记录位于相邻 `AtlasSite/docs/identity-contract.md`、`configuration.md`、`S01-S02.md`、`review-S01-S02.md`。实际 token 用量不可获取。
+凭据、数据库、日志、恢复码、二进制和部署生成文件不得入库。此仓库仍需配置自己的 Git 远端，才能接入双仓库发布 CI。

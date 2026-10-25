@@ -30,8 +30,18 @@ func (app *App) replaySecurityEvents() error {
 	}
 	for _, record := range records {
 		e := record.Event
+		if e.Sequence > high && (e.Type == "credentials_changed" || e.Type == "recovery_changed" || e.Type == "recovery_isolated") {
+			if _, err = tx.Exec("DELETE FROM recovery_codes WHERE user_id=?", e.AccountID); err != nil {
+				return err
+			}
+		}
 		if e.Sequence <= high {
 			continue
+		}
+		if e.Type == "recovery_isolated" {
+			if _, err = tx.Exec("UPDATE users SET password_hash='',status=CASE WHEN status='active' THEN 'recovery_pending' ELSE status END WHERE id=? AND status<>'deleted'", e.AccountID); err != nil {
+				return err
+			}
 		}
 		if e.Type == "status_changed" {
 			if _, err = tx.Exec("UPDATE users SET status=?,status_version=?,recovery_until=? WHERE id=? AND status_version<?", e.Status, e.Version, e.OccurredAt+30*86400, e.AccountID, e.Version); err != nil {

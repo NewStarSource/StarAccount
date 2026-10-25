@@ -13,7 +13,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const response = await fetch(form.action, {method:"POST", body:data, headers:{Accept:"application/json"}});
         const result = await response.json();
         if (!response.ok) throw new Error(result.message || "操作未完成，请稍后重试。");
-        window.location.assign("/");
+        if (result.recovery_code) { status.textContent = result.message + " 恢复码：" + result.recovery_code + "。保存后可从导航继续使用。"; status.hidden = false; form.querySelectorAll("input[type=password]").forEach(input => { input.value = ""; }); } else { window.location.assign("/"); }
       } catch (error) { status.textContent = error.name === "TypeError" ? "连接中断，请稍后重试。" : error.name === "SyntaxError" ? "服务响应异常，请稍后重试。" : error.message; status.hidden = false; }
       finally { pending = false; button.disabled = false; form.removeAttribute("aria-busy"); }
     });

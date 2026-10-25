@@ -9,3 +9,5 @@ form{max-width:100%}label{display:block;margin-top:22px;font-size:13px;font-weig
 @media(max-width:600px){.account-header{padding:18px 20px;gap:14px;flex-wrap:wrap}.account-brand strong{font-size:17px}.brand-mark{font-size:26px}.account-header nav{order:3;width:100%;gap:4px}.account-header nav a{padding:7px 11px}.environment-label{margin-left:auto}.account-main{width:calc(100% - 40px);margin:32px auto 48px;min-height:300px}.page-login,.page-register,.page-recover,.page-oidc{margin-top:40px}h1{font-size:25px}.profile-heading{margin-bottom:22px}footer{padding:20px}.account-links{gap:12px;margin-top:32px}.profile-actions{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 .brand-mark{display:inline-flex}.brand-mark svg{width:32px;height:32px}@media(max-width:600px){.brand-mark svg{width:28px;height:28px}}
+
+.form-feedback, pre { overflow-wrap: anywhere; white-space: pre-wrap; }

@@ -27,7 +27,7 @@ func (app *App) validBackups() ([]AccountBackup, int) {
 		}
 		raw, err := os.ReadFile(filepath.Join(app.config.BackupDirectory, entry.Name()))
 		var m AccountBackup
-		if err != nil || json.Unmarshal(raw, &m) != nil || filepath.Base(m.Archive) != m.Archive || entry.Name() != m.Archive+".json" || m.Schema != 5 {
+		if err != nil || json.Unmarshal(raw, &m) != nil || filepath.Base(m.Archive) != m.Archive || entry.Name() != m.Archive+".json" || (m.Schema != 5 && m.Schema != 6) {
 			invalid++
 			continue
 		}

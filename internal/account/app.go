@@ -51,18 +51,20 @@ type App struct {
 	oidcStore    *oidcStore
 }
 type page struct {
-	Name      string
-	Title     string
-	Message   string
-	CSRF      template.HTML
-	Identity  *Identity
-	Token     string
-	Messages  []Mail
-	Synthetic bool
-	Failed    int
-	Force     bool
-	Sessions  []SessionView
-	Profile   publicProfile
+	Name         string
+	Title        string
+	Message      string
+	CSRF         template.HTML
+	Identity     *Identity
+	Token        string
+	Messages     []Mail
+	Production   bool
+	RecoveryCode string
+	Synthetic    bool
+	Failed       int
+	Force        bool
+	Sessions     []SessionView
+	Profile      publicProfile
 }
 type input struct {
 	Username   string `json:"username"`
@@ -110,10 +112,11 @@ func New(config Config, keys []byte, logger *log.Logger) (*App, error) {
 }
 func (app *App) Close() error { return app.db.Close() }
 
-func (app *App) Handler() http.Handler { return app.protectJournal(app.baseHandler()) }
+func (app *App) Handler() http.Handler { return app.transport(app.protectJournal(app.baseHandler())) }
 func (app *App) baseHandler() http.Handler {
 	router := chi.NewRouter()
 	app.identityRoutes(router)
+	app.recoveryRoutes(router)
 	app.profileMarkdownRoutes(router)
 	router.Get("/oidc/login", app.oidcLogin)
 	router.Post("/oidc/login", app.oidcLogin)
@@ -122,14 +125,14 @@ func (app *App) baseHandler() http.Handler {
 			app.respond(writer, request, 503, "DEPENDENCY_UNAVAILABLE", "服务暂时不可用，请稍后重试")
 			return
 		}
-		writeJSON(writer, 200, map[string]any{"ok": true, "service": "star-account", "stage": "S03", "oidc_configured": app.provider != nil, "integration": "本地合成；真实环境未联调", "real_users": false})
+		writeJSON(writer, 200, map[string]any{"ok": true, "service": "star-account", "mode": app.config.Mode, "oidc_configured": app.provider != nil, "real_users": app.config.secure()})
 	})
 	router.Get("/robots.txt", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(writer, "User-agent: *\nDisallow: /\n")
 	})
 	router.Get("/api/v1/config", func(writer http.ResponseWriter, request *http.Request) {
-		writeJSON(writer, 200, map[string]any{"service": "star-account", "mail_mode": app.config.MailMode, "password_owner": "star-account", "oidc_configured": app.provider != nil, "real_users": false})
+		writeJSON(writer, 200, map[string]any{"service": "star-account", "mail_mode": app.config.MailMode, "password_owner": "star-account", "oidc_configured": app.provider != nil, "real_users": app.config.secure()})
 	})
 	router.Get("/api/v1/csrf", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, 200, map[string]string{"csrf_token": csrf.Token(request)})
@@ -177,7 +180,7 @@ func (app *App) baseHandler() http.Handler {
 	router.NotFound(func(writer http.ResponseWriter, request *http.Request) {
 		app.respond(writer, request, 404, "NOT_FOUND", "页面不存在")
 	})
-	protected := csrf.Protect(app.keys[:32], csrf.Secure(false), csrf.HttpOnly(true), csrf.SameSite(csrf.SameSiteLaxMode), csrf.Path("/"), csrf.CookieName("star_account_csrf"), csrf.ErrorHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	protected := csrf.Protect(app.keys[:32], csrf.Secure(app.config.secure()), csrf.HttpOnly(true), csrf.SameSite(csrf.SameSiteLaxMode), csrf.Path("/"), csrf.CookieName("star_account_csrf"), csrf.ErrorHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		app.audit("csrf_rejected")
 		app.respond(writer, request, 403, "CSRF_INVALID", "页面已失效，请刷新后重试")
 	})))(router)
@@ -188,7 +191,7 @@ func (app *App) baseHandler() http.Handler {
 		writer.Header().Set("X-Frame-Options", "DENY")
 		writer.Header().Set("X-Robots-Tag", "noindex, nofollow")
 		writer.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-		if request.Host != app.config.Address {
+		if request.Host != app.config.publicHost() {
 			app.respond(writer, request, 400, "HOST_INVALID", "请求地址无效")
 			return
 		}
@@ -196,7 +199,7 @@ func (app *App) baseHandler() http.Handler {
 			app.respond(writer, request, 403, "ORIGIN_INVALID", "请在账户网站内完成操作")
 			return
 		}
-		if request.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		if request.Header.Get("Sec-Fetch-Site") == "cross-site" && (request.Method != "GET" && request.Method != "HEAD" || request.Header.Get("Sec-Fetch-Mode") != "navigate") {
 			app.respond(writer, request, 403, "ORIGIN_INVALID", "请在账户网站内完成操作")
 			return
 		}
@@ -224,7 +227,7 @@ func (app *App) baseHandler() http.Handler {
 				}
 				if request.URL.Path == "/authorize" {
 					binding := randomToken()
-					http.SetCookie(writer, &http.Cookie{Name: "star_oidc_flow", Value: binding, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 300})
+					http.SetCookie(writer, &http.Cookie{Name: "star_oidc_flow", Value: binding, Path: "/", HttpOnly: true, Secure: app.config.secure(), SameSite: http.SameSiteLaxMode, MaxAge: 300})
 					request = request.WithContext(context.WithValue(request.Context(), oidcBindingKey{}, binding))
 				}
 				if request.URL.Path == "/authorize/callback" {
@@ -240,7 +243,10 @@ func (app *App) baseHandler() http.Handler {
 				return
 			}
 		}
-		protected.ServeHTTP(writer, csrf.PlaintextHTTPRequest(request))
+		if !app.config.secure() {
+			request = csrf.PlaintextHTTPRequest(request)
+		}
+		protected.ServeHTTP(writer, request)
 	})
 }
 
@@ -264,7 +270,7 @@ func (app *App) action(action string) http.HandlerFunc {
 				app.internal(writer, request)
 				return
 			}
-			setSession(writer, "", false)
+			setSession(writer, "", app.config.secure())
 			app.audit("logout")
 			app.respond(writer, request, 200, "SIGNED_OUT", "已退出。旧会话已失效。")
 			return
@@ -309,7 +315,8 @@ func (app *App) action(action string) http.HandlerFunc {
 				app.respond(writer, request, 429, "RATE_LIMITED", "尝试过于频繁，请稍后重试")
 				return
 			}
-			if err = app.registerInvite(values.Username, values.Password, values.InviteCode); errors.Is(err, errInvite) {
+			recoveryCode := randomToken()
+			if err = app.registerInviteWithCode(values.Username, values.Password, values.InviteCode, hash(recoveryCode)); errors.Is(err, errInvite) {
 				app.respond(writer, request, 400, "INVITE_INVALID", "邀请码无效、已使用或用户名已存在")
 				return
 			} else if err != nil {
@@ -321,9 +328,9 @@ func (app *App) action(action string) http.HandlerFunc {
 				app.internal(writer, request)
 				return
 			}
-			setSession(writer, raw, false)
+			setSession(writer, raw, app.config.secure())
 			app.audit("invite_registration_succeeded")
-			app.respond(writer, request, 201, "REGISTERED", "注册成功，已登录新星账户。")
+			app.showRecoveryCode(writer, request, 201, recoveryCode)
 			return
 		}
 		if action == "request-reset" || action == "login" {
@@ -383,7 +390,7 @@ func (app *App) action(action string) http.HandlerFunc {
 				app.internal(writer, request)
 				return
 			}
-			setSession(writer, "", false)
+			setSession(writer, "", app.config.secure())
 			app.audit("credential_confirmed")
 			app.respond(writer, request, 200, "CONFIRMED", "密码已重置，请用新密码登录。原有会话已失效。")
 		case "login":
@@ -404,7 +411,7 @@ func (app *App) action(action string) http.HandlerFunc {
 				app.internal(writer, request)
 				return
 			}
-			setSession(writer, raw, false)
+			setSession(writer, raw, app.config.secure())
 			app.audit("login_succeeded")
 			app.respond(writer, request, 200, "SIGNED_IN", "已登录新星账户。可以返回首页查看会话并退出。")
 		}
@@ -432,6 +439,7 @@ func (app *App) internal(writer http.ResponseWriter, request *http.Request) {
 }
 func (app *App) render(writer http.ResponseWriter, request *http.Request, status int, value page) {
 	value.CSRF = csrf.TemplateField(request)
+	value.Production = app.config.secure()
 	value.Synthetic = app.config.MailMode == "synthetic"
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(status)

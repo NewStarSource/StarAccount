@@ -294,7 +294,7 @@ func (app *App) Backup() (AccountBackup, error) {
 	if err != nil {
 		return result, err
 	}
-	_, err = db.Exec("DELETE FROM mail_jobs; DELETE FROM tokens; DELETE FROM sessions; DELETE FROM oidc_requests; DELETE FROM oidc_tokens; DELETE FROM limits; DELETE FROM security_events; VACUUM;")
+	_, err = db.Exec("DELETE FROM recovery_codes; DELETE FROM mail_jobs; DELETE FROM tokens; DELETE FROM sessions; DELETE FROM oidc_requests; DELETE FROM oidc_tokens; DELETE FROM limits; DELETE FROM security_events; VACUUM;")
 	db.Close()
 	if err != nil {
 		return result, err
@@ -310,7 +310,7 @@ func (app *App) Backup() (AccountBackup, error) {
 	result.CreatedAt = app.now().Unix()
 	result.Tier = "hourly"
 	result.ScrubbedSequence = result.JournalSequence
-	result.Schema = 5
+	result.Schema = 6
 	result.Archive = fmt.Sprintf("%d-%s.backup", time.Now().UnixNano(), opaqueID())
 	sum := sha256.Sum256(raw)
 	result.Hash = hex.EncodeToString(sum[:])
@@ -348,7 +348,7 @@ func RestoreAccountBackup(config Config, keys []byte, archive, destination strin
 		return err
 	}
 	var manifest AccountBackup
-	if json.Unmarshal(meta, &manifest) != nil || manifest.Schema != 5 {
+	if json.Unmarshal(meta, &manifest) != nil || (manifest.Schema != 5 && manifest.Schema != 6) {
 		return errors.New("invalid account backup manifest")
 	}
 	match := manifest.JournalSequence == 0
@@ -387,6 +387,14 @@ func RestoreAccountBackup(config Config, keys []byte, archive, destination strin
 		return err
 	}
 	defer db.Close()
+	if manifest.Schema == 5 {
+		if _, err = db.Exec(recoveryCodeSchema); err != nil {
+			return err
+		}
+	}
+	if _, err = db.Exec("DELETE FROM recovery_codes"); err != nil {
+		return err
+	}
 	var trigger string
 	if err = db.QueryRow("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='account_status_event'").Scan(&trigger); err != nil {
 		return err
@@ -401,6 +409,11 @@ func RestoreAccountBackup(config Config, keys []byte, archive, destination strin
 	}
 	for _, record := range records {
 		e := record.Event
+		if e.Type == "recovery_isolated" && e.Sequence > manifest.JournalSequence {
+			if _, err = tx.Exec("UPDATE users SET password_hash='',status=CASE WHEN status='active' THEN 'recovery_pending' ELSE status END WHERE id=? AND status<>'deleted'", e.AccountID); err != nil {
+				return err
+			}
+		}
 		if e.Type == "credentials_changed" && e.Sequence > manifest.JournalSequence {
 			if _, err = tx.Exec("UPDATE users SET status='recovery_pending',password_hash='' WHERE id=? AND status<>'deleted'", e.AccountID); err != nil {
 				return err

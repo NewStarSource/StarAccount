@@ -3,28 +3,27 @@ package account
 import (
 	"encoding/json"
 	"errors"
-	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 )
 
 type Config struct {
-	Mode                string `json:"mode"`
-	Address             string `json:"address"`
-	Origin              string `json:"origin"`
-	Database            string `json:"database"`
-	KeyFile             string `json:"key_file"`
-	MailMode            string `json:"mail_mode"`
-	SMTPHost            string `json:"smtp_host"`
-	SMTPPort            int    `json:"smtp_port"`
-	MailFrom            string `json:"mail_from"`
-	OIDCSecretFile      string `json:"oidc_secret_file"`
-	SigningKeyFile      string `json:"signing_key_file"`
-	AtlasOrigin         string `json:"atlas_origin"`
-	SecurityJournalFile string `json:"security_journal_file"`
-	BackupDirectory     string `json:"backup_directory"`
-	BackupKeyFile       string `json:"backup_key_file"`
+	TrustedProxies      []string `json:"trusted_proxies,omitempty"`
+	Mode                string   `json:"mode"`
+	Address             string   `json:"address"`
+	Origin              string   `json:"origin"`
+	Database            string   `json:"database"`
+	KeyFile             string   `json:"key_file"`
+	MailMode            string   `json:"mail_mode"`
+	SMTPHost            string   `json:"smtp_host"`
+	SMTPPort            int      `json:"smtp_port"`
+	MailFrom            string   `json:"mail_from"`
+	OIDCSecretFile      string   `json:"oidc_secret_file"`
+	SigningKeyFile      string   `json:"signing_key_file"`
+	AtlasOrigin         string   `json:"atlas_origin"`
+	SecurityJournalFile string   `json:"security_journal_file"`
+	BackupDirectory     string   `json:"backup_directory"`
+	BackupKeyFile       string   `json:"backup_key_file"`
 }
 
 func LoadConfig(filename string) (Config, []byte, error) {
@@ -50,29 +49,23 @@ func LoadConfig(filename string) (Config, []byte, error) {
 }
 
 func (config Config) Validate() error {
-	if config.Mode != "development" && config.Mode != "test" {
-		return errors.New("当前阶段仅开放 development/test；生产需要 S03/S04 和上线验收")
+	if err := validateTransport(config.Mode, config.Address, config.Origin, config.TrustedProxies); err != nil {
+		return err
 	}
-	host, _, err := net.SplitHostPort(config.Address)
-	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-		return errors.New("当前阶段只允许绑定回环地址")
-	}
-	origin, err := url.Parse(config.Origin)
-	if err != nil || origin.Host != config.Address || origin.Scheme != "http" || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" || origin.User != nil {
-		return errors.New("origin 必须与回环 HTTP 监听地址一致")
+	if config.secure() && (config.MailMode == "synthetic" || config.OIDCSecretFile == "" || config.SigningKeyFile == "" || config.AtlasOrigin == "") {
+		return errors.New("生产禁止合成邮箱，且必须配置 OIDC")
 	}
 	if config.Database == "" || config.KeyFile == "" {
 		return errors.New("database/key_file 不能为空")
 	}
-	if config.MailMode != "synthetic" && config.MailMode != "smtp" {
-		return errors.New("mail_mode 必须显式指定 synthetic 或 smtp")
+	if config.MailMode != "synthetic" && config.MailMode != "smtp" && config.MailMode != "disabled" {
+		return errors.New("mail_mode 必须显式指定 synthetic、smtp 或 disabled")
 	}
 	if config.MailMode == "smtp" && (config.SMTPHost == "" || config.SMTPPort < 1 || config.MailFrom == "" || os.Getenv("STARACCOUNT_SMTP_USER") == "" || os.Getenv("STARACCOUNT_SMTP_PASSWORD") == "") {
 		return errors.New("SMTP 配置不完整，不能启动")
 	}
 	if config.OIDCSecretFile != "" || config.SigningKeyFile != "" || config.AtlasOrigin != "" {
-		origin, err := url.Parse(config.AtlasOrigin)
-		if err != nil || origin.Scheme != "http" || net.ParseIP(origin.Hostname()) == nil || !net.ParseIP(origin.Hostname()).IsLoopback() || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" || config.OIDCSecretFile == "" || config.SigningKeyFile == "" {
+		if err := validateOrigin(config.AtlasOrigin, config.secure()); err != nil || config.OIDCSecretFile == "" || config.SigningKeyFile == "" {
 			return errors.New("OIDC 配置不完整或星图地址无效")
 		}
 	}

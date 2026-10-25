@@ -32,6 +32,9 @@ func normalizeUsername(value string) (string, error) {
 }
 
 func (app *App) registerInvite(username, password, code string) error {
+	return app.registerInviteWithCode(username, password, code, "")
+}
+func (app *App) registerInviteWithCode(username, password, code, recoveryHash string) error {
 	if !validPassword(password) || code == "" {
 		return errInvite
 	}
@@ -65,6 +68,11 @@ func (app *App) registerInvite(username, password, code string) error {
 	_, err = transaction.Exec("UPDATE invite_codes SET used_by=? WHERE code_hash=? AND used_at=?", userID, hash(code), usedAt)
 	if err != nil {
 		return err
+	}
+	if recoveryHash != "" {
+		if _, err = transaction.Exec("INSERT INTO recovery_codes VALUES(?,?,?,?)", userID, recoveryHash, app.now().Unix(), app.now().Add(365*24*time.Hour).Unix()); err != nil {
+			return err
+		}
 	}
 	return transaction.Commit()
 }
@@ -109,6 +117,9 @@ func syntheticEmail(address string) bool {
 }
 
 func (app *App) requestMail(address, password, kind string) error {
+	if app.config.MailMode == "disabled" {
+		return nil
+	}
 	var candidate []byte
 	var err error
 	if kind == "verify" {
@@ -209,6 +220,9 @@ func (app *App) consume(raw, kind, password string) error {
 		return err
 	}
 	if _, err = transaction.Exec("UPDATE tokens SET candidate_hash='' WHERE user_id=?", userID); err != nil {
+		return err
+	}
+	if _, err = transaction.Exec("DELETE FROM recovery_codes WHERE user_id=?", userID); err != nil {
 		return err
 	}
 	if _, err = transaction.Exec("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", app.now().Unix(), userID); err != nil {

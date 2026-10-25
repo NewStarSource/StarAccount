@@ -1,8 +1,8 @@
 module staraccount
 
-go 1.26.9
+go 1.26.10
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require (
 	github.com/go-chi/chi/v5 v5.3.2

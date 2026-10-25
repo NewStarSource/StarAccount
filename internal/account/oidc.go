@@ -70,7 +70,10 @@ func (auth *authorization) GetState() string                   { return auth.Req
 func (auth *authorization) GetSubject() string                 { return auth.Subject }
 func (auth *authorization) Done() bool                         { return auth.Complete }
 
-type atlasClient struct{ origin string }
+type atlasClient struct {
+	origin     string
+	production bool
+}
 
 func (client atlasClient) GetID() string                       { return "star-atlas" }
 func (client atlasClient) RedirectURIs() []string              { return []string{client.origin + "/auth/callback"} }
@@ -84,7 +87,7 @@ func (client atlasClient) GrantTypes() []oidc.GrantType        { return []oidc.G
 func (client atlasClient) LoginURL(id string) string           { return "/oidc/login?id=" + url.QueryEscape(id) }
 func (client atlasClient) AccessTokenType() op.AccessTokenType { return op.AccessTokenTypeBearer }
 func (client atlasClient) IDTokenLifetime() time.Duration      { return 5 * time.Minute }
-func (client atlasClient) DevMode() bool                       { return true }
+func (client atlasClient) DevMode() bool                       { return !client.production }
 func (client atlasClient) RestrictAdditionalIdTokenScopes() func([]string) []string {
 	return func(scopes []string) []string { return scopes }
 }
@@ -123,7 +126,11 @@ func (app *App) initOIDC() error {
 	store := &oidcStore{app: app, secret: string(secret), key: signingKey{rsaKey, hex.EncodeToString(fingerprint[:16])}}
 	var encryptionKey [32]byte
 	copy(encryptionKey[:], app.keys[32:64])
-	provider, err := op.NewProvider(&op.Config{CryptoKey: encryptionKey, CryptoKeyId: "account-v1", CodeMethodS256: true, DefaultLogoutRedirectURI: "/", SupportedScopes: []string{"openid", "atlas_identity"}}, store, op.StaticIssuer(app.config.Origin), op.WithAllowInsecure())
+	options := []op.Option{}
+	if !app.config.secure() {
+		options = append(options, op.WithAllowInsecure())
+	}
+	provider, err := op.NewProvider(&op.Config{CryptoKey: encryptionKey, CryptoKeyId: "account-v1", CodeMethodS256: true, DefaultLogoutRedirectURI: "/", SupportedScopes: []string{"openid", "atlas_identity"}}, store, op.StaticIssuer(app.config.Origin), options...)
 	if err != nil {
 		return err
 	}
@@ -206,7 +213,7 @@ func (store *oidcStore) GetClientByClientID(_ context.Context, id string) (op.Cl
 	if id != "star-atlas" {
 		return nil, oidc.ErrInvalidClient()
 	}
-	return atlasClient{store.app.config.AtlasOrigin}, nil
+	return atlasClient{store.app.config.AtlasOrigin, store.app.config.secure()}, nil
 }
 func (store *oidcStore) AuthorizeClientIDSecret(_ context.Context, id, secret string) error {
 	if id != "star-atlas" || subtle.ConstantTimeCompare([]byte(hash(secret)), []byte(hash(store.secret))) != 1 {
@@ -358,7 +365,7 @@ func (app *App) oidcLogin(writer http.ResponseWriter, request *http.Request) {
 			app.respond(writer, request, 401, "INVALID_CREDENTIALS", "无法登录，请检查邮箱、密码和账户状态")
 			return
 		}
-		setSession(writer, raw, false)
+		setSession(writer, raw, app.config.secure())
 		clone := request.Clone(request.Context())
 		clone.Header = clone.Header.Clone()
 		clone.Header.Del("Cookie")

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"staraccount/internal/account"
@@ -103,6 +105,22 @@ func main() {
 	if len(flag.Args()) > 0 {
 		var result any
 		switch flag.Args()[0] {
+		case "isolate-recovery":
+			if len(flag.Args()) != 2 || flag.Args()[1] != "--isolated-copy" {
+				logger.Fatal("仅可在停机的隔离恢复副本执行 isolate-recovery --isolated-copy")
+			}
+			err = app.IsolateRestoredCopy()
+			result = map[string]string{"status": "recovery_isolated"}
+		case "issue-recovery":
+			if len(flag.Args()) != 3 || flag.Args()[2] != "--identity-verified" {
+				logger.Fatal("issue-recovery 需要用户名和 --identity-verified，必须先通过独立渠道核验本人")
+			}
+			code, issueErr := app.IssueRecovery(flag.Args()[1])
+			if issueErr != nil {
+				logger.Fatal("受控恢复码生成失败")
+			}
+			fmt.Println(code)
+			return
 		case "backup":
 			result, err = app.Backup()
 		case "diagnose":
@@ -116,7 +134,7 @@ func main() {
 		json.NewEncoder(os.Stdout).Encode(result)
 		return
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	var worker sync.WaitGroup
 	worker.Add(1)
@@ -130,11 +148,16 @@ func main() {
 		_ = server.Shutdown(shutdown)
 		close(stopped)
 	}()
-	logger.Print("本机内部测试服务启动：", config.Origin, "；真实服务未联调")
-	if err = server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Print("监听失败")
+	logger.Print("服务启动：", config.Origin, "；模式：", config.Mode)
+	serveErr := server.ListenAndServe()
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		logger.Printf("监听失败：%v", serveErr)
 	}
 	cancel()
 	<-stopped
 	worker.Wait()
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		app.Close()
+		os.Exit(1)
+	}
 }
