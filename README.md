@@ -38,3 +38,10 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 - [身份约定](../AtlasSite/docs/identity-contract.md)
 
 凭据、数据库、日志、恢复码、二进制和部署生成文件不得入库。此仓库仍需配置自己的 Git 远端，才能接入双仓库发布 CI。
+
+## 月度记录
+
+2026 年 11 月与星图一同暂不公测，继续内部使用、安全流程完善与运行验证。此安排不自动改变服务器的访问控制配置。
+
+- [2026.10 发行笔记](docs/RELEASE_NOTES_2026-10.md)
+- [2026.11 发行计划](docs/RELEASE_PLAN_2026-11.md)
