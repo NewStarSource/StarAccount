@@ -20,6 +20,7 @@ import (
 type SessionView struct {
 	ID      string `json:"id"`
 	Created string `json:"created_at"`
+	Expires string `json:"expires_at"`
 	Current bool   `json:"current"`
 }
 type identityEvent struct {
@@ -101,7 +102,26 @@ func (app *App) identityRoutes(router chi.Router) {
 			app.internal(writer, request)
 			return
 		}
-		app.render(writer, request, 200, page{Name: "security", Identity: identity, Sessions: sessions})
+		recovery, err := app.recoveryStatus(request.Context(), identity.ID)
+		if err != nil {
+			app.internal(writer, request)
+			return
+		}
+		var count int
+		if err = app.db.QueryRowContext(request.Context(), "SELECT count(*) FROM sessions WHERE user_id=? AND revoked_at IS NULL AND expires_at>?", identity.ID, app.now().Unix()).Scan(&count); err != nil {
+			app.internal(writer, request)
+			return
+		}
+		var recent int64
+		if err = app.db.QueryRowContext(request.Context(), "SELECT reauthenticated_at FROM sessions WHERE id=? AND user_id=?", identity.SessionID, identity.ID).Scan(&recent); err != nil {
+			app.internal(writer, request)
+			return
+		}
+		until := ""
+		if recent > app.now().Add(-5*time.Minute).Unix() {
+			until = securityTime(recent + 5*60)
+		}
+		app.render(writer, request, 200, page{Name: "security", Identity: identity, Sessions: sessions, SessionCount: count, Recovery: recovery, SecurityUntil: until})
 	})
 	router.Get("/recover", func(writer http.ResponseWriter, request *http.Request) {
 		app.render(writer, request, 200, page{Name: "recover"})
@@ -128,7 +148,7 @@ func (app *App) identityRoutes(router chi.Router) {
 	}
 }
 func (app *App) sessionViews(ctx context.Context, identity *Identity) ([]SessionView, error) {
-	rows, err := app.db.QueryContext(ctx, "SELECT id,created_at FROM sessions WHERE user_id=? AND revoked_at IS NULL AND expires_at>? ORDER BY created_at DESC,id LIMIT 100", identity.ID, app.now().Unix())
+	rows, err := app.db.QueryContext(ctx, "SELECT id,created_at,expires_at FROM sessions WHERE user_id=? AND revoked_at IS NULL AND expires_at>? ORDER BY (id=?) DESC,created_at DESC,id LIMIT 100", identity.ID, app.now().Unix(), identity.SessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -136,11 +156,12 @@ func (app *App) sessionViews(ctx context.Context, identity *Identity) ([]Session
 	sessions := []SessionView{}
 	for rows.Next() {
 		var session SessionView
-		var created int64
-		if err = rows.Scan(&session.ID, &created); err != nil {
+		var created, expires int64
+		if err = rows.Scan(&session.ID, &created, &expires); err != nil {
 			return nil, err
 		}
-		session.Created = time.Unix(created, 0).In(time.FixedZone("Asia/Shanghai", 8*3600)).Format("2006-01-02 15:04:05 +08:00")
+		session.Created = securityTime(created)
+		session.Expires = securityTime(expires)
 		session.Current = session.ID == identity.SessionID
 		sessions = append(sessions, session)
 	}
@@ -281,6 +302,10 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 				return
 			}
 			app.audit("reauthenticated")
+			if !strings.Contains(request.Header.Get("Accept"), "application/json") {
+				http.Redirect(writer, request, "/security", http.StatusSeeOther)
+				return
+			}
 			app.respond(writer, request, 200, "REAUTHENTICATED", "身份已重新确认，五分钟内可以执行安全操作。")
 			return
 		}
@@ -298,7 +323,7 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 		}
 		switch action {
 		case "revoke":
-			result, updateErr := transaction.Exec("UPDATE sessions SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL", app.now().Unix(), request.PostForm.Get("session_id"), identity.ID)
+			result, updateErr := transaction.Exec("UPDATE sessions SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL AND expires_at>?", app.now().Unix(), request.PostForm.Get("session_id"), identity.ID, app.now().Unix())
 			if updateErr != nil {
 				app.internal(writer, request)
 				return
@@ -329,7 +354,17 @@ func (app *App) securityAction(action string) http.HandlerFunc {
 			setSession(writer, "", app.config.secure())
 		}
 		app.audit("security_" + action)
-		app.respond(writer, request, 200, "UPDATED", "操作完成，受影响会话已撤销。注销恢复期为 30 天；恢复必须重新验证。")
+		message := "该会话及其星图登录已退出。"
+		if action == "revoke" && request.PostForm.Get("session_id") != identity.SessionID && !strings.Contains(request.Header.Get("Accept"), "application/json") {
+			http.Redirect(writer, request, "/security", http.StatusSeeOther)
+			return
+		}
+		if action == "revoke-all" {
+			message = "全部账户与星图会话已退出，请重新登录。"
+		} else if action == "deactivate" {
+			message = "账户已注销，全部会话已失效。30 天内可验证原密码恢复账户。"
+		}
+		app.respond(writer, request, 200, "UPDATED", message)
 	}
 }
 

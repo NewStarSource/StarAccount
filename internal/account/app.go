@@ -51,20 +51,23 @@ type App struct {
 	oidcStore    *oidcStore
 }
 type page struct {
-	Name         string
-	Title        string
-	Message      string
-	CSRF         template.HTML
-	Identity     *Identity
-	Token        string
-	Messages     []Mail
-	Production   bool
-	RecoveryCode string
-	Synthetic    bool
-	Failed       int
-	Force        bool
-	Sessions     []SessionView
-	Profile      publicProfile
+	Name          string
+	Title         string
+	Message       string
+	CSRF          template.HTML
+	Identity      *Identity
+	Token         string
+	Messages      []Mail
+	Production    bool
+	RecoveryCode  string
+	Recovery      RecoveryStatus
+	SessionCount  int
+	SecurityUntil string
+	Synthetic     bool
+	Failed        int
+	Force         bool
+	Sessions      []SessionView
+	Profile       publicProfile
 }
 type input struct {
 	Username   string `json:"username"`

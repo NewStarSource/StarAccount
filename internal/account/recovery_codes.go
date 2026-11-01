@@ -1,6 +1,7 @@
 package account
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net"
@@ -11,6 +12,50 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// RecoveryStatus contains metadata only; the stored hash is never read for display.
+type RecoveryStatus struct {
+	State   string
+	Created string
+	Expires string
+}
+
+func securityTime(unix int64) string {
+	return time.Unix(unix, 0).In(time.FixedZone("Asia/Shanghai", 8*3600)).Format("2006-01-02 15:04:05 +08:00")
+}
+
+func (app *App) recoveryStatus(ctx context.Context, id string) (RecoveryStatus, error) {
+	var created, expires int64
+	err := app.db.QueryRowContext(ctx, "SELECT created_at,expires_at FROM recovery_codes WHERE user_id=?", id).Scan(&created, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RecoveryStatus{State: "未设置"}, nil
+	}
+	if err != nil {
+		return RecoveryStatus{}, err
+	}
+	state := "可用"
+	if expires <= app.now().Unix() {
+		state = "已过期"
+	}
+	return RecoveryStatus{State: state, Created: securityTime(created), Expires: securityTime(expires)}, nil
+}
+
+func (app *App) recoverySettings(w http.ResponseWriter, r *http.Request, status int, i *Identity, message string) {
+	recovery, err := app.recoveryStatus(r.Context(), i.ID)
+	if err != nil {
+		app.internal(w, r)
+		return
+	}
+	app.render(w, r, status, page{Name: "recovery_settings", Identity: i, Recovery: recovery, Message: message})
+}
+
+func (app *App) recoveryError(w http.ResponseWriter, r *http.Request, status int, i *Identity, code, message string) {
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		app.respond(w, r, status, code, message)
+		return
+	}
+	app.recoverySettings(w, r, status, i, message)
+}
 
 func (app *App) showRecoveryCode(w http.ResponseWriter, r *http.Request, status int, code string) {
 	message := "恢复码已更新。请立即离线保存，仅显示这一次，一年内有效。"
@@ -36,7 +81,7 @@ func (app *App) recoveryRoutes(router chi.Router) {
 			http.Redirect(w, r, "/login", 303)
 			return
 		}
-		app.render(w, r, 200, page{Name: "recovery_settings", Identity: i})
+		app.recoverySettings(w, r, 200, i, "")
 	})
 	router.Post("/api/v1/security/recovery-code", app.createRecoveryCode)
 	router.Post("/api/v1/auth/recover-password", app.recoverPassword)
@@ -56,18 +101,18 @@ func (app *App) createRecoveryCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !app.allow("recovery-code:"+i.ID, 5, 15*time.Minute) {
-		app.respond(w, r, 429, "RATE_LIMITED", "尝试过于频繁，请稍后重试")
+		app.recoveryError(w, r, 429, i, "RATE_LIMITED", "尝试过于频繁，请稍后重试")
 		return
 	}
 	if r.ParseForm() != nil || !validPassword(r.PostForm.Get("password")) {
-		app.respond(w, r, 400, "INPUT_INVALID", "请填写有效密码")
+		app.recoveryError(w, r, 400, i, "INPUT_INVALID", "请填写有效密码")
 		return
 	}
 	select {
 	case app.expensive <- struct{}{}:
 		defer func() { <-app.expensive }()
 	default:
-		app.respond(w, r, 503, "BUSY", "请稍后重试")
+		app.recoveryError(w, r, 503, i, "BUSY", "请稍后重试")
 		return
 	}
 	var old string
@@ -76,7 +121,7 @@ func (app *App) createRecoveryCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(old), []byte(r.PostForm.Get("password"))) != nil {
-		app.respond(w, r, 401, "INVALID_CREDENTIALS", "凭据无效")
+		app.recoveryError(w, r, 401, i, "INVALID_CREDENTIALS", "当前密码不正确，请重新输入")
 		return
 	}
 	tx, err := app.db.Begin()
