@@ -117,6 +117,7 @@ func (app *App) baseHandler() http.Handler {
 	router := chi.NewRouter()
 	app.identityRoutes(router)
 	app.recoveryRoutes(router)
+	app.passwordRoutes(router)
 	app.profileMarkdownRoutes(router)
 	router.Get("/oidc/login", app.oidcLogin)
 	router.Post("/oidc/login", app.oidcLogin)
