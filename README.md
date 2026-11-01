@@ -41,7 +41,9 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
 - [身份约定](../AtlasSite/docs/identity-contract.md)
 
-凭据、数据库、日志、恢复码、二进制和部署生成文件不得入库。此仓库仍需配置自己的 Git 远端，才能接入双仓库发布 CI。
+凭据、数据库、日志、恢复码、二进制和部署生成文件不得入库。本地已配置 GitHub 远端；远端包含的提交与双仓库发布 CI 实际状态仍需核验。
+
+原创代码采用 [GPLv3](LICENSE)，第三方及账户数据许可边界见 [NOTICE](NOTICE.md)。双服务发布包保留两端及依赖许可清单，运行核对使用[内部验收清单](../AtlasSite/docs/INTERNAL_OPERATIONS_2026-11.md)。
 
 ## 月度记录
 
