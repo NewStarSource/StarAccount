@@ -1,0 +1,3 @@
+# Keep the build context to the prebuilt binary only.
+**
+!dist/staraccount

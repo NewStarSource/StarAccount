@@ -1,0 +1,85 @@
+name: image-release
+
+# Builds the linux/amd64 runtime image for a published GitHub Release and
+# attaches it to that release as a compressed image archive. The production
+# host pulls the archive, imports it into containerd and promotes it.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: image-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build linux/amd64 binary
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags "-s -w" -o dist/staraccount ./cmd/staraccount
+          file dist/staraccount
+          sha256sum dist/staraccount
+
+      - name: Build container image
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg COMMIT="${GITHUB_SHA}" \
+            -t "staratlas/account:${TAG}" \
+            -f Dockerfile .
+          docker image inspect "staratlas/account:${TAG}" --format '{{.Id}} {{.Architecture}}'
+
+      - name: Export image archive
+        run: |
+          set -euo pipefail
+          docker save "staratlas/account:${TAG}" | gzip -9 > "account-image-${TAG}.tar.gz"
+          sha256sum "account-image-${TAG}.tar.gz" > "account-image-${TAG}.sha256"
+          ls -lh "account-image-${TAG}.tar.gz"
+
+      - name: Attach archive to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${TAG}" \
+            "account-image-${TAG}.tar.gz" \
+            "account-image-${TAG}.sha256" \
+            --clobber
+
+      - name: Summary
+        run: |
+          {
+            echo "### 账户镜像已发布"
+            echo ""
+            echo "- 版本：\`${TAG}\`"
+            echo "- 提交：\`${GITHUB_SHA}\`"
+            echo "- 镜像：\`staratlas/account:${TAG}\`"
+            echo "- 附件：\`account-image-${TAG}.tar.gz\`"
+            echo "- 服务器由 \`staratlas-release-watch.timer\` 自动拉取并滚动更新"
+          } >> "$GITHUB_STEP_SUMMARY"
